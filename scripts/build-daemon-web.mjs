@@ -54,6 +54,11 @@ function inject(html, marker, content) {
 }
 
 const xtermJs = read(join(repoRoot, 'node_modules', '@xterm', 'xterm', 'lib', 'xterm.js'));
+// Inline images (#1641): the addon's UMD build publishes `ImageAddon` on the
+// global. Inlined right after xterm so app.js can load it into every terminal.
+// Sixel additionally needs WebAssembly, which the hash-pinned script-src does
+// not allow; app.js detects that at runtime and keeps only the iTerm2 path.
+const addonImageJs = read(join(repoRoot, 'node_modules', '@xterm', 'addon-image', 'lib', 'addon-image.js'));
 const xtermCss = read(join(repoRoot, 'node_modules', '@xterm', 'xterm', 'css', 'xterm.css'));
 const appCss = read(join(frontendDir, 'styles.css'));
 const appJs = read(join(frontendDir, 'app.js'));
@@ -84,6 +89,7 @@ let html = read(join(frontendDir, 'index.html'));
 html = inject(html, '/*__XTERM_CSS__*/', xtermCss);
 html = inject(html, '/*__APP_CSS__*/', appCss);
 html = inject(html, '/*__XTERM_JS__*/', xtermJs);
+html = inject(html, '/*__ADDON_IMAGE_JS__*/', addonImageJs);
 html = inject(html, '/*__ATTENTION_FORMAT_JS__*/', attentionFormatJs);
 html = inject(html, '/*__PAIR_QUERY_JS__*/', pairQueryJs);
 html = inject(html, '/*__TOUCH_SCROLL_JS__*/', touchScrollJs);
@@ -137,17 +143,18 @@ const fail = (msg) => {
   process.exit(1);
 };
 
-// The page inlines seven scripts (xterm, attentionFormat, pairQuery, touchScroll,
+// The page inlines eight scripts (xterm, addon-image, attentionFormat, pairQuery, touchScroll,
 // keyboardProtocol, copyPasteKeys, app) and one style block (xterm css + our
 // css). A count that moved means index.html grew or lost a block and nobody
 // re-read this gate; refuse rather than guess which. Raised 3 → 4 when
 // pairQuery.js was added for QR pairing, 4 → 5 when touchScroll.js was added
 // for #890, 5 → 6 when copyPasteKeys.js was added for browser copy/paste,
-// 6 → 7 when keyboardProtocol.js was added for the kitty-negotiation gate: the
+// 6 → 7 when keyboardProtocol.js was added for the kitty-negotiation gate,
+// 7 → 8 when @xterm/addon-image was added for inline images (#1641): the
 // policy itself is derived from the served bytes, so an extra block is hashed
 // like the others — the count is here to make the change deliberate, not to cap
 // it.
-if (blocks.scripts.length !== 7) fail(`expected 7 inline <script> blocks, found ${blocks.scripts.length}`);
+if (blocks.scripts.length !== 8) fail(`expected 8 inline <script> blocks, found ${blocks.scripts.length}`);
 if (blocks.styles.length !== 1) fail(`expected 1 inline <style> block, found ${blocks.styles.length}`);
 if (blocks.externalRefs.length > 0) {
   fail(
