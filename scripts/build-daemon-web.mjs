@@ -56,8 +56,7 @@ function inject(html, marker, content) {
 const xtermJs = read(join(repoRoot, 'node_modules', '@xterm', 'xterm', 'lib', 'xterm.js'));
 // Inline images (#1641): the addon's UMD build publishes `ImageAddon` on the
 // global. Inlined right after xterm so app.js can load it into every terminal.
-// Sixel additionally needs WebAssembly, which the hash-pinned script-src does
-// not allow; app.js detects that at runtime and keeps only the iTerm2 path.
+// Both of its decoders are WebAssembly; inlineImages.js probes before loading.
 const addonImageJs = read(join(repoRoot, 'node_modules', '@xterm', 'addon-image', 'lib', 'addon-image.js'));
 const xtermCss = read(join(repoRoot, 'node_modules', '@xterm', 'xterm', 'css', 'xterm.css'));
 const appCss = read(join(frontendDir, 'styles.css'));
@@ -84,6 +83,9 @@ const keyboardProtocolJs = read(join(frontendDir, 'keyboardProtocol.js'));
 // Copy / paste / newline key decisions. Separate so the chord table is unit
 // tested against the exact bytes the phone runs, without a DOM or xterm.
 const copyPasteKeysJs = read(join(frontendDir, 'copyPasteKeys.js'));
+// Inline-image gate (#1641): the wasm probe and the addon options. Separate so
+// "no wasm, no addon" is unit tested against the exact bytes the phone runs.
+const inlineImagesJs = read(join(frontendDir, 'inlineImages.js'));
 let html = read(join(frontendDir, 'index.html'));
 
 html = inject(html, '/*__XTERM_CSS__*/', xtermCss);
@@ -95,6 +97,7 @@ html = inject(html, '/*__PAIR_QUERY_JS__*/', pairQueryJs);
 html = inject(html, '/*__TOUCH_SCROLL_JS__*/', touchScrollJs);
 html = inject(html, '/*__KEYBOARD_PROTOCOL_JS__*/', keyboardProtocolJs);
 html = inject(html, '/*__KEYS_JS__*/', copyPasteKeysJs);
+html = inject(html, '/*__INLINE_IMAGES_JS__*/', inlineImagesJs);
 html = inject(html, '/*__APP_JS__*/', appJs);
 
 mkdirSync(outDir, { recursive: true });
@@ -143,18 +146,19 @@ const fail = (msg) => {
   process.exit(1);
 };
 
-// The page inlines eight scripts (xterm, addon-image, attentionFormat, pairQuery, touchScroll,
-// keyboardProtocol, copyPasteKeys, app) and one style block (xterm css + our
+// The page inlines nine scripts (xterm, addon-image, attentionFormat, pairQuery, touchScroll,
+// keyboardProtocol, copyPasteKeys, inlineImages, app) and one style block (xterm css + our
 // css). A count that moved means index.html grew or lost a block and nobody
 // re-read this gate; refuse rather than guess which. Raised 3 → 4 when
 // pairQuery.js was added for QR pairing, 4 → 5 when touchScroll.js was added
 // for #890, 5 → 6 when copyPasteKeys.js was added for browser copy/paste,
 // 6 → 7 when keyboardProtocol.js was added for the kitty-negotiation gate,
-// 7 → 8 when @xterm/addon-image was added for inline images (#1641): the
+// 7 → 9 when @xterm/addon-image and its inlineImages.js gate were added for
+// inline images (#1641): the
 // policy itself is derived from the served bytes, so an extra block is hashed
 // like the others — the count is here to make the change deliberate, not to cap
 // it.
-if (blocks.scripts.length !== 8) fail(`expected 8 inline <script> blocks, found ${blocks.scripts.length}`);
+if (blocks.scripts.length !== 9) fail(`expected 9 inline <script> blocks, found ${blocks.scripts.length}`);
 if (blocks.styles.length !== 1) fail(`expected 1 inline <style> block, found ${blocks.styles.length}`);
 if (blocks.externalRefs.length > 0) {
   fail(
