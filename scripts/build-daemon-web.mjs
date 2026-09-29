@@ -86,6 +86,9 @@ const copyPasteKeysJs = read(join(frontendDir, 'copyPasteKeys.js'));
 // Inline-image gate (#1641): the wasm probe and the addon options. Separate so
 // "no wasm, no addon" is unit tested against the exact bytes the phone runs.
 const inlineImagesJs = read(join(frontendDir, 'inlineImages.js'));
+// Device-reply filter: drops the answers xterm and the image addon give to
+// device queries in the pane's output, which only the pane owner may answer.
+const deviceReplyJs = read(join(frontendDir, 'deviceReply.js'));
 let html = read(join(frontendDir, 'index.html'));
 
 html = inject(html, '/*__XTERM_CSS__*/', xtermCss);
@@ -98,6 +101,7 @@ html = inject(html, '/*__TOUCH_SCROLL_JS__*/', touchScrollJs);
 html = inject(html, '/*__KEYBOARD_PROTOCOL_JS__*/', keyboardProtocolJs);
 html = inject(html, '/*__KEYS_JS__*/', copyPasteKeysJs);
 html = inject(html, '/*__INLINE_IMAGES_JS__*/', inlineImagesJs);
+html = inject(html, '/*__DEVICE_REPLY_JS__*/', deviceReplyJs);
 html = inject(html, '/*__APP_JS__*/', appJs);
 
 mkdirSync(outDir, { recursive: true });
@@ -146,19 +150,19 @@ const fail = (msg) => {
   process.exit(1);
 };
 
-// The page inlines nine scripts (xterm, addon-image, attentionFormat, pairQuery, touchScroll,
-// keyboardProtocol, copyPasteKeys, inlineImages, app) and one style block (xterm css + our
+// The page inlines ten scripts (xterm, addon-image, attentionFormat, pairQuery, touchScroll,
+// keyboardProtocol, copyPasteKeys, inlineImages, deviceReply, app) and one style block (xterm css + our
 // css). A count that moved means index.html grew or lost a block and nobody
 // re-read this gate; refuse rather than guess which. Raised 3 → 4 when
 // pairQuery.js was added for QR pairing, 4 → 5 when touchScroll.js was added
 // for #890, 5 → 6 when copyPasteKeys.js was added for browser copy/paste,
 // 6 → 7 when keyboardProtocol.js was added for the kitty-negotiation gate,
-// 7 → 9 when @xterm/addon-image and its inlineImages.js gate were added for
-// inline images (#1641): the
+// 7 → 10 when @xterm/addon-image, its inlineImages.js gate and the
+// deviceReply.js filter were added for inline images (#1641): the
 // policy itself is derived from the served bytes, so an extra block is hashed
 // like the others — the count is here to make the change deliberate, not to cap
 // it.
-if (blocks.scripts.length !== 9) fail(`expected 9 inline <script> blocks, found ${blocks.scripts.length}`);
+if (blocks.scripts.length !== 10) fail(`expected 10 inline <script> blocks, found ${blocks.scripts.length}`);
 if (blocks.styles.length !== 1) fail(`expected 1 inline <style> block, found ${blocks.styles.length}`);
 if (blocks.externalRefs.length > 0) {
   fail(

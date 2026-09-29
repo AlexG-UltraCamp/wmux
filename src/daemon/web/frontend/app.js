@@ -184,11 +184,24 @@
   // inside the parser and lose the output that follows an image.
   var inlineImagesEnabled = true;
   function loadImageAddon(t) {
-    wmuxInlineImages.load(t, {
+    if (!t) return;
+    wmuxInlineImages.sync(t, {
       enabled: inlineImagesEnabled,
       ImageAddon: typeof ImageAddon === 'object' ? ImageAddon : null,
-      WebAssembly: typeof WebAssembly === 'object' ? WebAssembly : null
+      WebAssembly: typeof WebAssembly === 'object' ? WebAssembly : null,
+      createImageBitmap: typeof createImageBitmap === 'function' ? createImageBitmap : null
     });
+  }
+  // A phone stays connected across a server-side switch, so the setting is
+  // re-read whenever a stream (re)opens and applied to every open terminal.
+  var inlineImagesCheck = null;
+  function refreshInlineImages() {
+    if (inlineImagesCheck) return;
+    inlineImagesCheck = api('/api/config').then(function (r) { return r.json(); }).then(function (cfg) {
+      inlineImagesEnabled = cfg.inlineImages !== false;
+      loadImageAddon(term);
+      tiles.forEach(function (tl) { loadImageAddon(tl.term); });
+    }).catch(function () { /* the next open asks again */ }).then(function () { inlineImagesCheck = null; });
   }
 
   function newTerm(cols, rows) {
@@ -439,10 +452,12 @@
         sendKeys: sendInput,
         notify: touchScrollNotice
       });
-      if (allowInput) term.onData(function (d) {
+      // Live device replies (DA1, XTSMGRAPHICS, size reports) are the pane
+      // owner's to give; deviceReply.js drops them here.
+      if (allowInput) term.onData(wmuxDeviceReply.guard(function (d) {
         if (termRepaints > 0) return; // parser reply to a replayed query
         sendInput(d);
-      });
+      }));
       attachTerminalKeys(term, sendInput, !allowInput, function () { return paneAcceptsCsiU(currentSession); }, function () { return paneAcceptsWin32(currentSession); });
       // Auto-focus so typing and Ctrl+V work without a click first — a browser
       // only delivers the paste event to the focused xterm textarea.
@@ -1462,7 +1477,7 @@
         if (term) term.write(bytes);
       },
       exit: function () { setConn('ended', 'ended'); },
-      open: function () { setConn('live', 'live'); },
+      open: function () { setConn('live', 'live'); refreshInlineImages(); },
       error: function () { setConn('reconnect', 'reconnecting…'); diagnoseStreamError(); }
     });
   }
@@ -1589,10 +1604,10 @@
       // focus back on each reply, which pinned the page to whichever pane
       // chattered most (caught in live dogfood — a tap looked like it did
       // nothing). Focus moves on an explicit tap only.
-      tile.term.onData(function (d) {
+      tile.term.onData(wmuxDeviceReply.guard(function (d) {
         if (tile.repaints > 0) return; // parser reply to a replayed query
         sendTo(tile.sessionId, d);
-      });
+      }));
     }
     // Same copy/newline/paste handling as the 1-up terminal — Ctrl+C with a
     // selection must copy here too, never SIGINT the tile's process. Sends go
@@ -1632,7 +1647,7 @@
         renderTileHead(tile);
         if (tile.sessionId === currentSession) setConn('ended', 'ended');
       },
-      open: function () { if (tile.sessionId === currentSession) setConn('live', 'live'); },
+      open: function () { if (tile.sessionId === currentSession) setConn('live', 'live'); refreshInlineImages(); },
       error: function () {
         if (tile.sessionId === currentSession) setConn('reconnect', 'reconnecting…');
         diagnoseStreamError();
