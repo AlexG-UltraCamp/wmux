@@ -24,6 +24,7 @@ import { killProcessTree } from './automation/treeKill';
 import { recordedRunPtyIds } from './automation/store';
 import { AUTOMATION_EVENT } from '../shared/automation';
 import { InputReceiptStore } from './web/InputReceiptStore';
+import { PhoneWorktreeService } from './web/phoneWorktree';
 import { AnswerReceiptStore } from './approvals/AnswerReceiptStore';
 import { coercePhoneDecisions } from './approvals/decisionConfig';
 import { createOpenCodeDecisions } from './approvals/openCodeDecisions';
@@ -186,6 +187,15 @@ let runHistory: RunHistoryStore | null = null;
 let inputReceipts: InputReceiptStore | null = null;
 function getInputReceipts(): InputReceiptStore {
   return inputReceipts ??= new InputReceiptStore(getWmuxDir());
+}
+let phoneWorktrees: PhoneWorktreeService | null = null;
+// Phone worktree creation (contract item 5). Its receipt store loads here, once;
+// an unreadable store leaves the service unavailable (fail closed).
+function getPhoneWorktrees(): PhoneWorktreeService {
+  return phoneWorktrees ??= new PhoneWorktreeService({
+    wmuxDir: getWmuxDir(),
+    audit: (deviceId, reason) => getDeviceStore().recordGitWorktree(deviceId, reason),
+  });
 }
 let answerReceipts: AnswerReceiptStore | null = null;
 function getAnswerReceipts(): AnswerReceiptStore {
@@ -684,6 +694,7 @@ async function restoreWebServer(sessionManager: DaemonSessionManager): Promise<v
         devices: getDeviceStore(),
         runHistory: getRunHistory,
         inputReceipts: getInputReceipts,
+        phoneWorktrees: getPhoneWorktrees,
         answerReceipts: getAnswerReceipts,
         decisionForms: phoneDecisionForms,
         ...webDecisionDeps(sessionManager),
@@ -2982,6 +2993,7 @@ function registerRpcHandlers(
       devices: getDeviceStore(),
       runHistory: getRunHistory,
       inputReceipts: getInputReceipts,
+      phoneWorktrees: getPhoneWorktrees,
       answerReceipts: getAnswerReceipts,
       decisionForms: phoneDecisionForms,
       ...webDecisionDeps(sessionManager),
