@@ -1560,7 +1560,7 @@ describe('deck:send local Fleet fast path — review scenarios', () => {
     const streamed = register(board);
     await invoke(IPC.DECK_FLEET_FAST_PATH_SET, { enabled: true });
     const on = await invoke(IPC.DECK_SEND, { workspaceId: 'ws-1', text: '작업 상태' });
-    expect(on).toMatchObject({ ok: true, localAnswer: { text: expect.stringContaining('2 idle') } });
+    expect(on).toMatchObject({ ok: true, localAnswer: { fleet: { intent: 'status', counts: { idle: 2 } } } });
     expect(adapters.flatMap((a) => a.sentTexts)).toEqual([]);
     expect(streamed.filter((e) => e.type === 'turn-end' && e.localAnswer)).toHaveLength(1);
 
@@ -1606,11 +1606,11 @@ describe('deck:send local Fleet fast path — review scenarios', () => {
   it('an empty fresh board gets explicit zero-count wording, never a success claim', async () => {
     register(vi.fn(async () => freshBoard()));
     await invoke(IPC.DECK_FLEET_FAST_PATH_SET, { enabled: true });
-    const needs = await invoke(IPC.DECK_SEND, { workspaceId: 'ws-1', text: 'who needs me' }) as { localAnswer: { text: string } };
-    expect(needs.localAnswer.text).toContain('0 tasks need your attention.');
-    const done = await invoke(IPC.DECK_SEND, { workspaceId: 'ws-1', text: '끝난 작업' }) as { localAnswer: { text: string } };
-    expect(done.localAnswer.text).toContain('0 turns finished. A finished turn does not verify task or test success.');
-    expect(done.localAnswer.text).not.toContain('Some rows are omitted');
+    // Main ships data; the renderer words it (fleetAnswerText.test.ts).
+    const needs = await invoke(IPC.DECK_SEND, { workspaceId: 'ws-1', text: 'who needs me' }) as { localAnswer: { fleet: unknown } };
+    expect(needs.localAnswer.fleet).toMatchObject({ intent: 'needs_you', counts: { needsYou: 0 }, rows: [], limited: false });
+    const done = await invoke(IPC.DECK_SEND, { workspaceId: 'ws-1', text: '끝난 작업' }) as { localAnswer: { fleet: unknown } };
+    expect(done.localAnswer.fleet).toMatchObject({ intent: 'finished', counts: { finished: 0 }, rows: [], limited: false });
   });
 
   it('a stale board (older than 2 s) is never rendered; Moa answers instead', async () => {
