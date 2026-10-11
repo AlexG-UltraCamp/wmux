@@ -1,5 +1,6 @@
 // Must stay the first import: turns off working-directory executable lookup (Windows) before any module runs.
 import '../shared/exeSearchGuard';
+import { warmLoginShellPath } from './claude/resolveClaudeExecutable';
 import { randomUUID as phoneBrowserRequestId } from 'node:crypto';
 import { webContents as phoneWebContents } from 'electron';
 import { withPhoneBrowserInputFocus, dispatchPhoneBrowserScroll, phoneBrowserNativeBounds } from './phone/PhoneBrowserInput';
@@ -556,6 +557,9 @@ const autoUpdater = new AutoUpdater(() => mainWindow, {
 // install waiter's post-exit verification (installTeardown.ts) covers it on
 // the update path.
 void app.whenReady().then(() => { try { warnOnInstallIntegrityGap(); } catch { /* best-effort */ } });
+// Moa's claude lookup: read the login shell's PATH in the background (a Finder
+// launch misses nvm/fnm/volta). Never awaited; resolution works without it.
+void app.whenReady().then(() => { void warmLoginShellPath(); });
 // Dev-build-only e2e seam (e2e/): inert unless WMUX_E2E_HOOKS=1 on an unpackaged build.
 void app.whenReady().then(() => installE2EHooks());
 
