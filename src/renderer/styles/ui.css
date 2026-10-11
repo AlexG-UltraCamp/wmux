@@ -2823,3 +2823,8 @@ button.wmux-a2a-row:hover { background: var(--hover-fill); }
 .wmux-a2a-note { margin: 0; font-size: 12px; color: var(--text-sub); }
 .wmux-a2a-note[data-tone="warning"] { color: var(--accent-yellow); }
 .wmux-a2a-note[data-tone="danger"] { color: var(--accent-red); }
+/* Review order guide (PrReviewGuide.tsx) */
+.wmux-git-guide { list-style: decimal; padding-left: 20px; display: flex; flex-direction: column; gap: 6px; }
+.wmux-git-guide-current { outline: 1px solid var(--primary, currentColor); border-radius: 6px; padding: 4px 6px; }
+.wmux-git-guide-items { list-style: disc; padding-left: 18px; font-size: 12px; }
+.wmux-git-approve-ready { outline: 2px solid var(--primary, currentColor); outline-offset: 1px; }
