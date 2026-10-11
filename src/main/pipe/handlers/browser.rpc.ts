@@ -39,12 +39,23 @@ import { surfaceOpeners, type OpenerCaller } from '../../browser-session/Surface
 import { resolvePaneForPty } from '../../workspace/ptyOwnership';
 import { PANE_PROFILE_UNRESOLVED_CODE, type ChromePaneBindings } from '../../../shared/chromePaneBinding';
 import {
+  NEEDS_CONSENT_CODE,
   policyDeniedMessage,
   type BrowserPolicyAuthorization,
+  type PanePolicy,
   type PanePolicyDecision,
 } from '../../../shared/browserPolicy';
 import { compileHostPolicy, navigationVerdict, type NavigationVerdict } from '../../../shared/browserHostPolicy';
 import type { BrowserPolicyStore } from '../../browser-session/BrowserPolicyStore';
+import { getProfileNamespaceStore } from '../../browser-session/ProfileNamespaceStore';
+import {
+  isIdentityRunPty,
+  liveRunIdentity,
+  panePolicyFingerprint,
+  noteRunBrowserRefusal,
+  setBrowserIdentitySources,
+  type LiveRunIdentity,
+} from '../../automation/runIdentity';
 import { approachPath, defaultStartPoint, type Point } from '../../../shared/pointerPath';
 import {
   dispatchTouchDrag,
@@ -130,7 +141,8 @@ type GetWindow = () => BrowserWindow | null;
 
 /** What main wires in for protected browser panes. */
 export interface BrowserPolicyWiring {
-  store: Pick<BrowserPolicyStore, 'hasAnyHistory' | 'workspaceHasHistory' | 'decisionFor'>;
+  store: Pick<BrowserPolicyStore, 'hasAnyHistory' | 'workspaceHasHistory' | 'decisionFor' | 'entryFor'>
+    & Partial<Pick<BrowserPolicyStore, 'onChange'>>;
   /** paneId → its exclusive Chrome profile binding (ChromeProfileStore). */
   paneBindings: () => ChromePaneBindings;
   /** Receives the caller-protection check below, for callers outside browser.* (computer use). */
@@ -152,28 +164,28 @@ const PROTECTED_GATE_EXEMPT: ReadonlySet<string> = new Set(['browser.lease.renew
  * Methods a protected pane may not call at all, with the reason. Agent-authored
  * page code (evaluate) waits for the consent grant in PR B; profile-wide cookie
  * access goes through the MCP lane's host-filtered tool instead; the builtin
- * CDP target lookup has nothing to offer a Chrome-only pane; and the
- * workspace-wide memory stores (recorded flows, promoted skills, site memory,
- * site guides) would carry what one account saw to another until PR C keys
- * them per account.
+ * CDP target lookup has nothing to offer a Chrome-only pane; and site guides
+ * stay off. The memory stores (recorded flows, promoted skills, site memory)
+ * are served from the pane's own per-account namespace (cacheWorkspace).
  */
 const PROTECTED_DENIED_METHODS: ReadonlyMap<string, string> = new Map([
   ['browser.evaluate', 'running page scripts needs a consent grant on a protected pane'],
   ['browser.cookies', 'cookies of a protected pane are reachable only through browser_cookies, limited to its allowed hosts'],
   ['browser.cdp.target', 'a protected pane has no builtin browser target'],
-  ['browser.actionCache.list', 'recorded flows are off on a protected pane'],
-  ['browser.actionCache.get', 'recorded flows are off on a protected pane'],
-  ['browser.actionCache.put', 'recorded flows are off on a protected pane'],
-  ['browser.actionCache.stats', 'recorded flows are off on a protected pane'],
-  ['browser.actionCache.forget', 'recorded flows are off on a protected pane'],
-  ['browser.actionCache.promote', 'recorded flows are off on a protected pane'],
-  ['browser.actionCache.demote', 'recorded flows are off on a protected pane'],
-  ['browser.actionCache.promoted', 'recorded flows are off on a protected pane'],
-  ['browser.siteMemory.list', 'site memory is off on a protected pane'],
-  ['browser.siteMemory.record', 'site memory is off on a protected pane'],
-  ['browser.siteMemory.forget', 'site memory is off on a protected pane'],
   ['browser.siteGuides.match', 'site guides are off on a protected pane'],
 ]);
+
+/**
+ * Memory writes that complete earlier work (a recorded flow being saved, a
+ * replay's outcome). On a protected pane each must name the policy epoch its
+ * scope was authorized at, so a completion from before a rebind cannot land
+ * in the namespace of the identity that replaced it. Immediate commands
+ * (note, promote, demote, forget) act under the identity attested now.
+ */
+function isMemoryCompletion(method: string, params: Record<string, unknown>): boolean {
+  if (method === 'browser.actionCache.put' || method === 'browser.actionCache.stats') return true;
+  return method === 'browser.siteMemory.record' && params['kind'] !== 'note';
+}
 
 /** The navigation target a call would send a protected pane to, or null. */
 function protectedNavigationTarget(method: string, params: Record<string, unknown>): string | null {
@@ -189,6 +201,82 @@ function protectedNavigationTarget(method: string, params: Record<string, unknow
     default:
       return null;
   }
+}
+
+/**
+ * A scheduled run acting as a protected pane's browser: a browser-only run
+ * claim (main's walk) or a call from a PTY main knows to be such a run.
+ */
+export function isRunCaller(ctx: RpcContext | undefined): boolean {
+  const claim = ctx?.workspaceClaim;
+  if (claim?.kind !== 'bound' || !claim.ptyId) return false;
+  return claim.browserOnly === true || isIdentityRunPty(claim.ptyId);
+}
+
+/**
+ * The pane a scheduled run's call acts for: the one its live run's signed
+ * identity names (the daemon answers only for a live run of its current
+ * incarnation), never whatever the renderer says about the run's PTY. Shared
+ * by the gate and the consent RPC so both map a run the same way.
+ *
+ * `run` is null when the daemon knows no such identity run (the caller is then
+ * unidentified). Throws — and records why on the run — when the run's identity
+ * is not confirmed in main, or the call names another workspace.
+ */
+export async function identityRunPane(
+  method: string,
+  ptyId: string,
+  workspaceId: string,
+): Promise<{ run: LiveRunIdentity | null; paneId: string | null }> {
+  const found = await liveRunIdentity(ptyId);
+  if (found && 'unmatched' in found) {
+    // A live identity run main holds no confirmed snapshot for (or under
+    // another mode): refused, and the run says why.
+    noteRunBrowserRefusal(found.runId, 'browser_needs_consent');
+    throw new Error(needsConsentMessage(method, "this schedule's browser identity is not confirmed; grant the schedule again in wmux"));
+  }
+  const run = found;
+  const paneId = run && run.identity.workspaceId === workspaceId ? run.identity.paneId : null;
+  if (run && !paneId) {
+    // A run claim always names its identity's workspace; this one does not
+    // (a pane claim on the run's opened terminal elsewhere). Refused, and
+    // the run says so.
+    noteRunBrowserRefusal(run.runId, 'browser_policy_denied');
+    throw new Error(policyDeniedMessage(method, "the call did not come from this schedule's browser identity workspace"));
+  }
+  return { run, paneId };
+}
+
+/**
+ * Why a run may no longer act under the identity the operator granted, or
+ * null: the same profile, still protected and confirmed, and that pane's
+ * policy as it was (a change to another pane does not matter).
+ */
+export function staleRunIdentity(
+  run: LiveRunIdentity,
+  pd: PanePolicyDecision,
+  currentProfile: string | undefined,
+  entry: PanePolicy | null,
+  bindingProfile: string | undefined,
+): string | null {
+  const identity = run.identity;
+  return pd.kind === 'legacy' ? "the pane's protection was turned off after this schedule was granted"
+    : pd.kind === 'protected' && !pd.confirmed ? "the pane's site list must be confirmed again"
+      : !currentProfile || currentProfile.toLowerCase() !== identity.profileId.toLowerCase()
+        ? "the pane's Chrome profile changed after this schedule was granted"
+        : panePolicyFingerprint(entry, bindingProfile) !== identity.fingerprint
+          ? "the pane's browser policy changed after this schedule was granted"
+          : null;
+}
+
+/** Calls that wait for a person (help requests, borrowing the user's tabs). */
+function waitsOnPerson(method: string, params: Record<string, unknown>): boolean {
+  return method === 'browser.help.request' || (method === 'browser.tabs' && params['action'] === 'borrow');
+}
+
+/** The message main throws for a call that needs the operator's consent again. */
+export function needsConsentMessage(method: string, why: string): string {
+  return `${method}: ${NEEDS_CONSENT_CODE}: ${why}. Do not retry unchanged.`;
 }
 
 function navigationRefusal(reason: Exclude<NavigationVerdict, { allowed: true }>['reason'], confirmed: boolean): string {
@@ -942,8 +1030,11 @@ export function registerBrowserRpc(
     if (!workspaceId || inProcessWithoutPane || !chromeRegistry.hasPaneBindings(workspaceId)) {
       return { profile: chromeRegistry.profileFor(workspaceId), paneBound: false, ...(callerPtyId && { callerPtyId }) };
     }
-    let paneId: string | null = null;
-    if (callerPtyId) {
+    // The pane the protected gate attested for this call (a protected pane,
+    // or a scheduled run acting as one) wins over any renderer lookup.
+    const attested = ctx ? protectedPanes.get(ctx) : undefined;
+    let paneId: string | null = attested && attested.workspaceId === workspaceId ? attested.paneId : null;
+    if (!paneId && callerPtyId) {
       try {
         paneId = await resolvePaneForPty(getWindow, callerPtyId, workspaceId);
       } catch {
@@ -990,7 +1081,31 @@ export function registerBrowserRpc(
   // renderer IPC, no CDP. Otherwise it resolves the CALLING pane from main's
   // own attestation (callerPaneOf → resolvePaneForPty) and, for a protected
   // pane, refuses what that pane may not do before the handler runs.
+  // What the operator's schedule grant reads to capture a browser identity:
+  // the same policy store and profile bindings this gate resolves against.
+  // A rebind or a move leaves the pane protected but unconfirmed: its memory
+  // namespace is retired right then, so even a rebind back to the same
+  // profile starts a fresh one.
+  if (browserPolicy?.store.onChange) {
+    const store = browserPolicy.store;
+    const retire = () => {
+      for (const paneId of Object.keys(browserPolicy.paneBindings())) {
+        if (store.entryFor(paneId)?.needsConfirm === true) void getProfileNamespaceStore().retire(paneId);
+      }
+    };
+    store.onChange?.(retire);
+  }
+  if (browserPolicy && chromeRegistry) {
+    const registry = chromeRegistry;
+    setBrowserIdentitySources({
+      entryFor: (paneId) => browserPolicy.store.entryFor(paneId),
+      profileFor: (workspaceId, paneId) => registry.profileFor(workspaceId, paneId),
+      paneBindings: () => browserPolicy.paneBindings(),
+    });
+  }
   const protectedDecisions = new WeakMap<RpcContext, Extract<PanePolicyDecision, { kind: 'protected' }>>();
+  /** The attested pane behind a recorded protected decision (memory namespace). */
+  const protectedPanes = new WeakMap<RpcContext, { workspaceId: string; paneId: string }>();
 
   const protectedGate = async (
     method: string,
@@ -998,9 +1113,12 @@ export function registerBrowserRpc(
     ctx: RpcContext | undefined,
   ): Promise<void> => {
     // A context may outlive one call; a decision is good for this call only.
-    if (ctx) protectedDecisions.delete(ctx);
+    if (ctx) {
+      protectedDecisions.delete(ctx);
+      protectedPanes.delete(ctx);
+    }
     const store = browserPolicy?.store;
-    if (!store || !store.hasAnyHistory()) return;
+    if (!store || (!store.hasAnyHistory() && !isRunCaller(ctx))) return;
     if (PROTECTED_GATE_EXEMPT.has(method) || !ctx) return;
     const decision = callerScope(ctx, params);
     // A refused caller is refused by the handler's own scopeFor, with its audit.
@@ -1012,8 +1130,16 @@ export function registerBrowserRpc(
     // never reach a protected pane's exclusive profile.
     if ((ctx.operator === true || isHostedCaller(ctx)) && !ptyId) return;
     if (!workspaceId) return;
+    // A scheduled run acting as a protected pane's browser: its pane is the
+    // one its live run's signed identity names (the daemon answers only for a
+    // live run of its current incarnation), never whatever the renderer says
+    // about the run's PTY.
+    const runCaller = isRunCaller(ctx);
+    let run: LiveRunIdentity | null = null;
     let paneId: string | null = null;
-    if (ptyId) {
+    if (ptyId && runCaller) {
+      ({ run, paneId } = await identityRunPane(method, ptyId, workspaceId));
+    } else if (ptyId) {
       try {
         paneId = await resolvePaneForPty(getWindow, ptyId, workspaceId);
       } catch {
@@ -1025,7 +1151,7 @@ export function registerBrowserRpc(
       // had) a protected pane, an unidentified caller could be that pane's
       // agent (an `auto-<runId>` PTY, a workspace-only claim). Never widen it
       // to the workspace default.
-      if (store.workspaceHasHistory(workspaceId)) {
+      if (runCaller || store.workspaceHasHistory(workspaceId)) {
         throw new Error(policyDeniedMessage(method, 'the calling pane could not be identified in a workspace with a protected browser pane'));
       }
       return;
@@ -1038,37 +1164,60 @@ export function registerBrowserRpc(
       && binding.workspaceId === workspaceId
       && binding.profile.toLowerCase() === currentProfile.toLowerCase();
     const pd = store.decisionFor(paneId, workspaceId, currentProfile, !!binding);
-    if (pd.kind === 'legacy') return;
-    if (pd.kind === 'denied') throw new Error(policyDeniedMessage(method, pd.why));
-    if (backend() !== 'chrome') {
-      throw new Error(policyDeniedMessage(method, 'a protected pane runs only on the Chrome browser backend'));
+    if (run && waitsOnPerson(method, params)) {
+      // Nobody is at the desk for a scheduled run: never leave it waiting.
+      noteRunBrowserRefusal(run.runId, 'browser_needs_consent');
+      throw new Error(needsConsentMessage(method, 'a scheduled run cannot wait for a person to answer in the browser'));
     }
-    if (!ownsProfile) {
-      throw new Error(policyDeniedMessage(method, 'a protected pane needs a Chrome profile bound to that pane alone'));
-    }
-    if (PROTECTED_DENIED_METHODS.has(method)) {
-      throw new Error(policyDeniedMessage(method, PROTECTED_DENIED_METHODS.get(method) as string));
-    }
-    // A named surface that lives anywhere but this pane's own Chrome — an
-    // in-app browser tab (not behind the proxy, live or discarded) or another
-    // profile's Chrome tab — is refused before any handler resolves it. An id
-    // nothing knows falls through to the handler's own not-found answer.
-    const surfaceId = typeof params['surfaceId'] === 'string' ? params['surfaceId'] : '';
-    const surfaceOwner = surfaceId ? chromeRegistry?.ownerOfSurface(surfaceId) : null;
-    const elsewhere = surfaceOwner
-      ? surfaceOwner.profile.toLowerCase() !== currentProfile?.toLowerCase()
-      : !!surfaceId && (!!webviewCdpManager.getTarget(surfaceId, undefined) || webviewCdpManager.isDiscarded(surfaceId));
-    if (elsewhere) {
-      throw new Error(policyDeniedMessage(method, "that surface is not a tab of this pane's own protected Chrome"));
-    }
-    const target = protectedNavigationTarget(method, params);
-    if (target !== null) {
-      const verdict = navigationVerdict(compileHostPolicy(pd.hosts), target);
-      if (!verdict.allowed) {
-        throw new Error(policyDeniedMessage(method, navigationRefusal(verdict.reason, pd.confirmed)));
+    if (run) {
+      // The run acts only under the identity the operator granted: the same
+      // profile, still protected and confirmed, and that pane's policy as it
+      // was (a change to another pane does not matter). Any change since
+      // needs a new grant — refused now, recorded on the run,
+      // never waited on.
+      const why = staleRunIdentity(run, pd, currentProfile, store.entryFor(paneId), binding?.profile);
+      if (why && pd.kind !== 'denied') {
+        noteRunBrowserRefusal(run.runId, 'browser_needs_consent');
+        throw new Error(needsConsentMessage(method, `${why}; grant the schedule again in wmux`));
       }
     }
+    try {
+      if (pd.kind === 'legacy') return;
+      if (pd.kind === 'denied') throw new Error(policyDeniedMessage(method, pd.why));
+      if (backend() !== 'chrome') {
+        throw new Error(policyDeniedMessage(method, 'a protected pane runs only on the Chrome browser backend'));
+      }
+      if (!ownsProfile) {
+        throw new Error(policyDeniedMessage(method, 'a protected pane needs a Chrome profile bound to that pane alone'));
+      }
+      if (PROTECTED_DENIED_METHODS.has(method)) {
+        throw new Error(policyDeniedMessage(method, PROTECTED_DENIED_METHODS.get(method) as string));
+      }
+      // A named surface that lives anywhere but this pane's own Chrome — an
+      // in-app browser tab (not behind the proxy, live or discarded) or another
+      // profile's Chrome tab — is refused before any handler resolves it. An id
+      // nothing knows falls through to the handler's own not-found answer.
+      const surfaceId = typeof params['surfaceId'] === 'string' ? params['surfaceId'] : '';
+      const surfaceOwner = surfaceId ? chromeRegistry?.ownerOfSurface(surfaceId) : null;
+      const elsewhere = surfaceOwner
+        ? surfaceOwner.profile.toLowerCase() !== currentProfile?.toLowerCase()
+        : !!surfaceId && (!!webviewCdpManager.getTarget(surfaceId, undefined) || webviewCdpManager.isDiscarded(surfaceId));
+      if (elsewhere) {
+        throw new Error(policyDeniedMessage(method, "that surface is not a tab of this pane's own protected Chrome"));
+      }
+      const target = protectedNavigationTarget(method, params);
+      if (target !== null) {
+        const verdict = navigationVerdict(compileHostPolicy(pd.hosts), target);
+        if (!verdict.allowed) {
+          throw new Error(policyDeniedMessage(method, navigationRefusal(verdict.reason, pd.confirmed)));
+        }
+      }
+    } catch (err) {
+      if (run) noteRunBrowserRefusal(run.runId, 'browser_policy_denied');
+      throw err;
+    }
     protectedDecisions.set(ctx, pd);
+    protectedPanes.set(ctx, { workspaceId, paneId });
   };
 
   /** The protected decision the gate recorded for this call, if any. */
@@ -1101,8 +1250,9 @@ export function registerBrowserRpc(
     register: (method, handler) =>
       rawRouter.register(method, (params, ctx) => {
         // Legacy (nothing ever protected): call straight through, not even a
-        // microtask later than before.
-        if (!browserPolicy?.store.hasAnyHistory()) return handler(params, ctx);
+        // microtask later than before. A scheduled run with a browser identity
+        // is always gated: its grant names a protected pane.
+        if (!browserPolicy?.store.hasAnyHistory() && !isRunCaller(ctx)) return handler(params, ctx);
         return protectedGate(method, params, ctx).then(() => handler(params, ctx));
       }),
   };
@@ -1942,11 +2092,13 @@ export function registerBrowserRpc(
   const actionCache = getActionCacheStore();
   const promotedSkills = getPromotedSkillStore();
 
-  const cacheWorkspace = (
+  const profileNamespaces = getProfileNamespaceStore();
+
+  const cacheWorkspace = async (
     method: RpcMethod,
     params: Record<string, unknown>,
     ctx?: RpcContext,
-  ): string => {
+  ): Promise<string> => {
     const decision = callerScope(ctx, params);
     // 'scoped' is a workspace wmux itself resolved for this caller. The
     // operator lane is the renderer, which is wmux. Everything else — the
@@ -1964,29 +2116,55 @@ export function registerBrowserRpc(
           'could not be verified. Recorded flows are never served on an unverified scope.',
       );
     }
-    return workspaceId;
+    // A protected pane remembers into its own per-account namespace, resolved
+    // from the gate's attestation (workspace, pane, profile) — never from
+    // anything the caller sent. Everyone else keeps the bare workspace key.
+    const pd = protectedDecisionOf(ctx);
+    const pane = ctx ? protectedPanes.get(ctx) : undefined;
+    if (!pd) {
+      // Only a protected scope ever names an epoch: a completion that does,
+      // arriving after the pane stopped being protected, belongs to the
+      // account namespace it was recorded in, never the workspace's.
+      if (isMemoryCompletion(method, params) && params['policyEpoch'] !== undefined) {
+        throw new Error(policyDeniedMessage(method, "this pane's browser identity changed since the action was recorded"));
+      }
+      return workspaceId;
+    }
+    if (!pd.confirmed || !pane || pane.workspaceId !== workspaceId) {
+      throw new Error(policyDeniedMessage(method, "this pane's memory is unavailable until the user confirms its site list again"));
+    }
+    // A write recorded under an earlier policy epoch (the pane was rebound,
+    // moved or re-confirmed since) belongs to an identity that is gone.
+    if (isMemoryCompletion(method, params) && params['policyEpoch'] !== pd.epoch) {
+      throw new Error(policyDeniedMessage(method, "this pane's browser identity changed since the action was recorded"));
+    }
+    const key = await profileNamespaces.namespaceFor(workspaceId, pane.paneId, pd.profileId);
+    if (!key) {
+      throw new Error(policyDeniedMessage(method, "this pane's memory namespace could not be established"));
+    }
+    return key;
   };
 
   router.register('browser.actionCache.list', async (params, ctx) => {
-    const workspaceId = cacheWorkspace('browser.actionCache.list', params, ctx);
+    const workspaceId = await cacheWorkspace('browser.actionCache.list', params, ctx);
     const urlKey = typeof params['urlKey'] === 'string' ? params['urlKey'] : undefined;
     const traces = actionCache.list(workspaceId);
     return { traces: urlKey ? traces.filter((t) => t.urlKey === urlKey) : traces };
   });
 
   router.register('browser.actionCache.get', async (params, ctx) => {
-    const workspaceId = cacheWorkspace('browser.actionCache.get', params, ctx);
+    const workspaceId = await cacheWorkspace('browser.actionCache.get', params, ctx);
     const name = typeof params['name'] === 'string' ? params['name'] : '';
     return { trace: actionCache.get(workspaceId, name) };
   });
 
   router.register('browser.actionCache.put', async (params, ctx) => {
-    const workspaceId = cacheWorkspace('browser.actionCache.put', params, ctx);
+    const workspaceId = await cacheWorkspace('browser.actionCache.put', params, ctx);
     return actionCache.put(workspaceId, params['trace']);
   });
 
   router.register('browser.actionCache.stats', async (params, ctx) => {
-    const workspaceId = cacheWorkspace('browser.actionCache.stats', params, ctx);
+    const workspaceId = await cacheWorkspace('browser.actionCache.stats', params, ctx);
     const name = typeof params['name'] === 'string' ? params['name'] : '';
     const failedStep = Number.isInteger(params['failedStep'])
       ? (params['failedStep'] as number)
@@ -2018,7 +2196,7 @@ export function registerBrowserRpc(
   });
 
   router.register('browser.actionCache.forget', async (params, ctx) => {
-    const workspaceId = cacheWorkspace('browser.actionCache.forget', params, ctx);
+    const workspaceId = await cacheWorkspace('browser.actionCache.forget', params, ctx);
     const name = typeof params['name'] === 'string' ? params['name'] : undefined;
     return { removed: await actionCache.forget(workspaceId, name) };
   });
@@ -2032,7 +2210,7 @@ export function registerBrowserRpc(
   // the cache that produced it — so there is no shadow-mode fallback either.
 
   router.register('browser.actionCache.promote', async (params, ctx) => {
-    const workspaceId = cacheWorkspace('browser.actionCache.promote', params, ctx);
+    const workspaceId = await cacheWorkspace('browser.actionCache.promote', params, ctx);
     const name = typeof params['name'] === 'string' ? params['name'] : '';
     const trace = actionCache.get(workspaceId, name);
     if (!trace) return { ok: false, reason: `no flow named "${name}" in this workspace` };
@@ -2058,7 +2236,7 @@ export function registerBrowserRpc(
   });
 
   router.register('browser.actionCache.demote', async (params, ctx) => {
-    const workspaceId = cacheWorkspace('browser.actionCache.demote', params, ctx);
+    const workspaceId = await cacheWorkspace('browser.actionCache.demote', params, ctx);
     const name = typeof params['name'] === 'string' ? params['name'] : '';
     // Resolved by NAME, not by slug: the agent knows the flow by the name it
     // saved it under, and asking it to work out the slug would be asking it to
@@ -2070,7 +2248,7 @@ export function registerBrowserRpc(
   });
 
   router.register('browser.actionCache.promoted', async (params, ctx) => {
-    const workspaceId = cacheWorkspace('browser.actionCache.promoted', params, ctx);
+    const workspaceId = await cacheWorkspace('browser.actionCache.promoted', params, ctx);
     const urlKey = typeof params['urlKey'] === 'string' ? params['urlKey'] : undefined;
     const records = urlKey
       ? promotedSkills.listForUrlKey(workspaceId, urlKey)
@@ -2090,7 +2268,7 @@ export function registerBrowserRpc(
   const siteMemoryOn = (): boolean => readSiteMemoryEnabled() !== false;
 
   router.register('browser.siteMemory.list', async (params, ctx) => {
-    const workspaceId = cacheWorkspace('browser.siteMemory.list', params, ctx);
+    const workspaceId = await cacheWorkspace('browser.siteMemory.list', params, ctx);
     // OFF serves nothing — the hint pipe's whole input is this call, so an
     // empty result IS the feature being off.
     if (!siteMemoryOn()) return { records: [], memory: null };
@@ -2110,7 +2288,7 @@ export function registerBrowserRpc(
   let siteGuidesWereOn = false;
 
   router.register('browser.siteGuides.match', async (params, ctx) => {
-    cacheWorkspace('browser.siteGuides.match', params, ctx);
+    await cacheWorkspace('browser.siteGuides.match', params, ctx);
     // Titles and home-relative paths of local notes are local-only data, so
     // the same disclosure gate as the CDP attach info applies: a third-party
     // wire client or a hosted plugin gets the answer an off setting gives.
@@ -2133,7 +2311,7 @@ export function registerBrowserRpc(
   });
 
   router.register('browser.siteMemory.record', async (params, ctx) => {
-    const workspaceId = cacheWorkspace('browser.siteMemory.record', params, ctx);
+    const workspaceId = await cacheWorkspace('browser.siteMemory.record', params, ctx);
     // OFF is a SILENT no-op, not an error. Every write hook here is
     // fire-and-forget with a `.catch(() => {})`, so an error would be consumed
     // by nobody and would only ever show up as a puzzling log line.
@@ -2187,7 +2365,7 @@ export function registerBrowserRpc(
   });
 
   router.register('browser.siteMemory.forget', async (params, ctx) => {
-    const workspaceId = cacheWorkspace('browser.siteMemory.forget', params, ctx);
+    const workspaceId = await cacheWorkspace('browser.siteMemory.forget', params, ctx);
     // Deliberately NOT gated on the flag. Someone who turns the feature off
     // must still be able to delete what it recorded before they did — a
     // forget that only worked while recording was enabled would be a trap.

@@ -16,6 +16,7 @@ import {
   type AutomationToastKind,
   type AutomationUiLocale,
 } from './toastText';
+import { noteRunForIdentity, resetIdentityRuns, setRunIdentityTransport } from './runIdentity';
 
 const ATTENTION_TOAST_KIND: Record<AutomationAttentionKind, AutomationToastKind> = {
   proposed: 'proposed',
@@ -177,6 +178,7 @@ export class AutomationBridge {
     this.stop();
     this.client = client;
     this.api = new AutomationClient(client);
+    setRunIdentityTransport(client);
     const onEvent = (ev: { type?: unknown; data?: unknown }): void => {
       if (ev?.type !== AUTOMATION_EVENT) return;
       const parsed = parseAutomationEvent(ev.data);
@@ -194,6 +196,7 @@ export class AutomationBridge {
     this.cleanups = [];
     this.client = null;
     this.api = null;
+    setRunIdentityTransport(null);
     this.hydrated = false;
     this.runPtys.clear();
     this.touchedDuringPull = null;
@@ -217,6 +220,7 @@ export class AutomationBridge {
       return;
     }
     if (api !== this.api) return; // stopped or restarted meanwhile
+    resetIdentityRuns(runs);
     if (this.touchedDuringPull === touched) this.touchedDuringPull = null;
     // An event that arrived while the snapshot was in flight is newer than it.
     for (const run of runs) if (!touched.has(run.id)) this.noteRun(run);
@@ -278,6 +282,7 @@ export class AutomationBridge {
     }
     this.send({ kind: 'event', event: ev });
     if (ev.type === 'run-changed') {
+      noteRunForIdentity(ev.run);
       this.toastRun(ev.run, ev.automationName);
     } else if (ev.type === 'attention') {
       // The live event carries no queue id; read the queue so the toast and
