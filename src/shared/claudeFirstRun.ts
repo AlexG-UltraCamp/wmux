@@ -26,3 +26,29 @@ export function isClaudeFirstRunScreen(excerpt: string | undefined | null): bool
   if (!excerpt) return false;
   return MARKERS.some((re) => re.test(excerpt));
 }
+
+// Claude's folder-trust question ("Do you trust the files in this folder?"),
+// whose highlighted default is "No, exit". Answering it is the user's call
+// (it lets Claude read, edit and run files there), so wmux never accepts it
+// for them; it only explains it in plain words.
+const TRUST_MARKERS: RegExp[] = [
+  /do you trust the files in this folder\??/i,
+  /yes,\s*i trust this folder/i,
+  /claude code'?ll be able to read, edit, and execute files here/i,
+];
+
+/** True when a captured terminal excerpt is Claude Code's folder-trust prompt. */
+export function isClaudeFolderTrustScreen(excerpt: string | undefined | null): boolean {
+  if (!excerpt) return false;
+  return TRUST_MARKERS.some((re) => re.test(excerpt));
+}
+
+export type ClaudeSetupScreen = 'first-run' | 'folder-trust';
+
+/** Which plain-language card a refused send needs, if any. Trust wins: once
+ *  the theme is picked, the trust question is what is actually on screen. */
+export function claudeSetupScreen(excerpt: string | undefined | null): ClaudeSetupScreen | null {
+  if (isClaudeFolderTrustScreen(excerpt)) return 'folder-trust';
+  if (isClaudeFirstRunScreen(excerpt)) return 'first-run';
+  return null;
+}
