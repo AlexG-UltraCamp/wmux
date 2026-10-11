@@ -32,7 +32,7 @@ import {
   type MoaGoalVerification,
 } from '../../shared/moaGoal';
 import type { GoalTaskRef } from './moaGoalVerifier';
-import { formatReviewGuide, type ReviewGuideStep } from '../../shared/prReviewGuide';
+import { formatReviewGuide, type ReviewGuide } from '../../shared/prReviewGuide';
 
 export interface ExecResult {
   code: number;
@@ -78,27 +78,26 @@ async function defaultBranch(repoRoot: string, ports: MoaGoalDeliveryPorts): Pro
   return b && b !== 'HEAD' ? b : 'main';
 }
 
-/** Where a reviewer should look, in order: what "done" meant, the proof, the
- *  diff. Built from the same verification the body reports. */
-export function reviewGuide(contract: MoaGoalContract, verification: MoaGoalVerification, item: { taskId: string; headSha: string }): ReviewGuideStep[] {
+/** Where a reviewer should look, in order: what was asked, the proof, the
+ *  code (optional). Built from the same verification the body reports; the
+ *  gate is 'missing' unless a result was recorded for this exact commit. */
+export function reviewGuide(contract: MoaGoalContract, verification: MoaGoalVerification, item: { taskId: string; headSha: string }): ReviewGuide {
   const { doneCriteria } = goalTermsOf(contract);
-  const gate = verification.gates.find((g) => g.taskId === item.taskId);
+  const gate = verification.gates.find((g) => g.taskId === item.taskId && g.headSha === item.headSha);
   const evidence: string[] = [];
   for (const c of verification.criteria) {
-    for (const a of c.artifacts) evidence.push(`Proof for (${c.criterion}): \`${a.path}\` (sha256 ${a.sha256.slice(0, 12)})`);
+    for (const a of c.artifacts) evidence.push(`(${c.criterion}) \`${a.path}\` (sha256 ${a.sha256.slice(0, 12)})`);
   }
-  evidence.push(gate
-    ? `${gate.exitCode === 0 ? 'Passed' : 'Failed'}: project checks (\`${gate.command}\`) on version \`${gate.headSha.slice(0, 12)}\``
-    : `Passed: project checks on version \`${item.headSha.slice(0, 12)}\``);
-  return [
-    {
-      target: 'criteria',
-      hint: 'What you asked for. Does this list match what you wanted?',
-      items: doneCriteria.length ? doneCriteria.map((c, i) => `(${i + 1}) ${c}`) : ['(no list was given; the project checks below are the proof)'],
-    },
-    { target: 'evidence', hint: 'Proof it works. Each item shows a check that ran on this exact version and passed.', items: evidence },
-    { target: 'files', hint: 'Optional: the code changes, for anyone who wants to read them. You can approve without this step.', items: [] },
-  ];
+  if (gate) evidence.push(`\`${gate.command}\``);
+  return {
+    steps: [
+      { target: 'criteria', items: doneCriteria.map((c, i) => `(${i + 1}) ${c}`) },
+      { target: 'evidence', items: evidence },
+      { target: 'files', items: [] },
+    ],
+    gate: !gate ? 'missing' : gate.exitCode === 0 ? 'passed' : 'failed',
+    headSha: item.headSha,
+  };
 }
 
 /** The PR body: where to look first, what was asked, what "done" meant, and the proof. */

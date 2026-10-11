@@ -12,7 +12,8 @@ import { resetReviewGuideChecks } from '../PrReviewGuide';
 import { useStore } from '../../../stores';
 import type { PrSummary } from '../../../../shared/prSurface';
 import type { PrReviewHead } from '../../../../shared/prReview';
-import type { ReviewGuideStep } from '../../../../shared/prReviewGuide';
+import type { ReviewGuide } from '../../../../shared/prReviewGuide';
+import type { PrCheck } from '../../../../shared/prReview';
 
 const A = 'a'.repeat(40);
 const pr: PrSummary = {
@@ -23,22 +24,28 @@ const head: PrReviewHead = {
   number: 7, title: 'Moa: fix a', url: pr.url, state: 'OPEN', isDraft: false, headRefOid: A,
   headRefName: 'wtask/fix-a', baseRefName: 'main', mergeable: 'MERGEABLE', mergeStateStatus: 'CLEAN',
 };
-const guide: ReviewGuideStep[] = [
-  { target: 'criteria', hint: 'Is this what was asked?', items: ['(1) a.txt says fixed'] },
-  { target: 'evidence', hint: 'Proof on this commit?', items: ['gate `npm test` exited 0'] },
-  { target: 'files', hint: 'Diff last.', items: [] },
-];
+const guideOf = (gate: ReviewGuide['gate'] = 'passed', headSha = A): ReviewGuide => ({
+  steps: [
+    { target: 'criteria', items: ['(1) a.txt says fixed'] },
+    { target: 'evidence', items: ['`npm test`'] },
+    { target: 'files', items: [] },
+  ],
+  gate,
+  headSha,
+});
+const guide = guideOf();
+const check = (bucket: PrCheck['bucket']): PrCheck => ({ name: 'ci', workflow: 'ci', bucket, link: 'l' });
 
 let container: HTMLDivElement;
 let root: Root;
 let scrolled: string[];
 
-function bridge(reviewGuide?: ReviewGuideStep[]) {
+function bridge(reviewGuide?: ReviewGuide, opts: { unverified?: boolean; checks?: PrCheck[] } = {}) {
   (window as unknown as { electronAPI: unknown }).electronAPI = {
     github: {
       prList: vi.fn(),
-      prDetail: vi.fn(async () => ({ ok: true, detail: { number: 7, comments: [], ...(reviewGuide ? { reviewGuide } : {}) } })),
-      prChecks: vi.fn(async () => ({ ok: true, value: { head, checks: [] } })),
+      prDetail: vi.fn(async () => ({ ok: true, detail: { number: 7, comments: [], ...(reviewGuide ? { reviewGuide } : {}), ...(opts.unverified ? { reviewGuideUnverified: true } : {}) } })),
+      prChecks: vi.fn(async () => ({ ok: true, value: { head, checks: opts.checks ?? [check('pass')] } })),
       prFiles: vi.fn(async () => ({ ok: true, value: { headRefOid: A, files: [], truncated: false } })),
       prThreads: vi.fn(async () => ({ ok: true, value: { threads: [], truncated: false } })),
       prSubmitReview: vi.fn(async () => ({ ok: true })), prMerge: vi.fn(async () => ({ ok: true })),
@@ -104,6 +111,48 @@ describe('PR review order guide', () => {
 
     click(q('[data-guide-check="1"]'));
     expect(approve().hasAttribute('data-pr-approve-ready')).toBe(false);
+  });
+
+  const checkAll = () => { for (const i of [0, 1, 2]) click(q(`[data-guide-check="${i}"]`)); };
+
+  it('a PR whose body claims a guide but is not a verified Moa PR shows only the warning', async () => {
+    bridge(undefined, { unverified: true });
+    await render();
+    expect(q('[data-pr-guide]')).toBeNull();
+    expect(q('[data-pr-guide-unverified]')).not.toBeNull();
+    expect(q('[data-pr-approve-ready]')).toBeNull();
+  });
+
+  it('a missing gate result says Not verified and never highlights Approve', async () => {
+    bridge(guideOf('missing'));
+    await render();
+    expect(q('[data-guide-gate="missing"]')!.textContent).toContain('Not verified');
+    checkAll();
+    expect(q('[data-pr-approve-ready]')).toBeNull();
+    expect(q('[data-guide-block="gate"]')).not.toBeNull();
+  });
+
+  it.each([['fail'], ['pending'], ['cancel']] as const)('CI %s keeps Approve plain even with every step checked', async (bucket) => {
+    bridge(guide, { checks: [check('pass'), check(bucket)] });
+    await render();
+    checkAll();
+    expect(q('[data-pr-approve-ready]')).toBeNull();
+    expect(q('[data-guide-block="ci"]')).not.toBeNull();
+  });
+
+  it('no CI checks at all is not green', async () => {
+    bridge(guide, { checks: [] });
+    await render();
+    checkAll();
+    expect(q('[data-pr-approve-ready]')).toBeNull();
+  });
+
+  it('a head other than the one Moa verified is never ready', async () => {
+    bridge(guideOf('passed', 'c'.repeat(40)));
+    await render();
+    checkAll();
+    expect(q('[data-pr-approve-ready]')).toBeNull();
+    expect(q('[data-guide-block="moved"]')).not.toBeNull();
   });
 
   it('keeps the checks when the pane is opened again for the same head', async () => {
