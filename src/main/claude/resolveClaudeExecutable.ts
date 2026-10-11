@@ -1,3 +1,4 @@
+import { execFile } from 'child_process';
 import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
@@ -19,14 +20,60 @@ export interface ResolveClaudeEnv {
   platform: NodeJS.Platform;
   env: Record<string, string | undefined>;
   homedir: string;
-  /** True when `p` is an existing regular file (or symlink to one). */
+  /** True when `p` is an existing regular file (or symlink to one) that this
+   *  process may run (POSIX: X_OK). A non-executable `claude` is skipped. */
   isFile: (p: string) => boolean;
+  /** Entry names in a folder; [] when unreadable. Used for version managers. */
+  readDir?: (p: string) => string[];
+  /** File contents, or null. Used for nvm's `alias/default`. */
+  readText?: (p: string) => string | null;
+  /** PATH as the user's login shell sets it (GUI launches miss it), or null. */
+  loginShellPath?: () => string | null;
+}
+
+/** Newest-first by numeric version (v22.3.0 > v20.11.1 > v9.0.0). */
+function byVersionDesc(a: string, b: string): number {
+  const pa = a.replace(/^v/, '').split('.').map((n) => parseInt(n, 10) || 0);
+  const pb = b.replace(/^v/, '').split('.').map((n) => parseInt(n, 10) || 0);
+  for (let i = 0; i < Math.max(pa.length, pb.length); i++) {
+    const d = (pb[i] ?? 0) - (pa[i] ?? 0);
+    if (d !== 0) return d;
+  }
+  return 0;
+}
+
+/** nvm installs: the `default` alias first, then newest. */
+function nvmBins(r: ResolveClaudeEnv, p: typeof path.posix): string[] {
+  const nvmDir = r.env.NVM_DIR || p.join(r.homedir, '.nvm');
+  const root = p.join(nvmDir, 'versions', 'node');
+  const versions = (r.readDir?.(root) ?? []).filter((v) => /^v?\d/.test(v)).sort(byVersionDesc);
+  if (versions.length === 0) return [];
+  const alias = r.readText?.(p.join(nvmDir, 'alias', 'default'))?.trim().replace(/^v/, '');
+  const preferred = alias ? versions.find((v) => v.replace(/^v/, '') === alias || v.replace(/^v/, '').startsWith(`${alias}.`)) : undefined;
+  const ordered = preferred ? [preferred, ...versions.filter((v) => v !== preferred)] : versions;
+  return ordered.map((v) => p.join(root, v, 'bin', 'claude'));
+}
+
+/** fnm installs, newest first. */
+function fnmBins(r: ResolveClaudeEnv, p: typeof path.posix): string[] {
+  const dirs = r.env.FNM_DIR
+    ? [r.env.FNM_DIR]
+    : r.platform === 'darwin'
+      ? [p.join(r.homedir, 'Library', 'Application Support', 'fnm'), p.join(r.homedir, '.local', 'share', 'fnm')]
+      : [p.join(r.env.XDG_DATA_HOME || p.join(r.homedir, '.local', 'share'), 'fnm'), p.join(r.homedir, '.fnm')];
+  const out: string[] = [];
+  for (const d of dirs) {
+    const root = p.join(d, 'node-versions');
+    for (const v of (r.readDir?.(root) ?? []).filter((x) => /^v?\d/.test(x)).sort(byVersionDesc)) {
+      out.push(p.join(root, v, 'installation', 'bin', 'claude'));
+    }
+  }
+  return out;
 }
 
 const UNSPAWNABLE_EXTS = new Set(['.cmd', '.bat']);
 
-function pathDirs(r: ResolveClaudeEnv): string[] {
-  const raw = r.env.PATH ?? r.env.Path ?? r.env.path ?? '';
+function pathDirs(r: ResolveClaudeEnv, raw: string = r.env.PATH ?? r.env.Path ?? r.env.path ?? ''): string[] {
   const sep = r.platform === 'win32' ? ';' : ':';
   const p = r.platform === 'win32' ? path.win32 : path.posix;
   // Only absolute entries: an empty entry or '.' means "the current folder",
@@ -71,13 +118,16 @@ export function claudeCandidates(r: ResolveClaudeEnv): string[] {
     // Homebrew (Apple silicon, Intel / Linuxbrew-style).
     out.push('/opt/homebrew/bin/claude', '/usr/local/bin/claude');
     out.push('/home/linuxbrew/.linuxbrew/bin/claude');
+    // Node version managers (npm -g lands inside the active Node's bin).
+    out.push(p.join(r.env.VOLTA_HOME || p.join(r.homedir, '.volta'), 'bin', 'claude'));
+    out.push(...nvmBins(r, p as typeof path.posix), ...fnmBins(r, p as typeof path.posix));
   }
   return [...new Set(out)];
 }
 
-export function resolveClaudeExecutableWith(r: ResolveClaudeEnv): string | null {
+function firstHit(r: ResolveClaudeEnv, candidates: string[]): string | null {
   const p = r.platform === 'win32' ? path.win32 : path.posix;
-  for (const c of claudeCandidates(r)) {
+  for (const c of candidates) {
     if (!p.isAbsolute(c)) continue;
     try {
       if (r.isFile(c)) return c;
@@ -88,12 +138,110 @@ export function resolveClaudeExecutableWith(r: ResolveClaudeEnv): string | null 
   return null;
 }
 
-function isFile(p: string): boolean {
+export function resolveClaudeExecutableWith(r: ResolveClaudeEnv): string | null {
+  const hit = firstHit(r, claudeCandidates(r));
+  if (hit || r.platform === 'win32' || !r.loginShellPath) return hit;
+  // Last resort, and only then (it spawns a shell once): the PATH the user's
+  // login shell builds. A Finder/Dock launch inherits a minimal PATH without
+  // the nvm/fnm/volta lines from ~/.zshrc. Same absolute-only rule as PATH.
+  const login = r.loginShellPath();
+  if (!login) return null;
+  return firstHit(r, pathDirs(r, login).map((d) => path.posix.join(d, 'claude')));
+}
+
+export function isExecutableFile(p: string): boolean {
   try {
-    return fs.statSync(p).isFile();
+    if (!fs.statSync(p).isFile()) return false;
+    if (process.platform !== 'win32') fs.accessSync(p, fs.constants.X_OK);
+    return true;
   } catch {
     return false;
   }
+}
+
+function readDir(p: string): string[] {
+  try {
+    return fs.readdirSync(p);
+  } catch {
+    return [];
+  }
+}
+
+function readText(p: string): string | null {
+  try {
+    return fs.readFileSync(p, 'utf8');
+  } catch {
+    return null;
+  }
+}
+
+const LOGIN_SHELL_TIMEOUT_MS = 2500;
+const PATH_START = '__WMUX_PATH_START__';
+const PATH_END = '__WMUX_PATH_END__';
+
+/** The PATH between our markers; rc files may print banners around it. */
+export function parseMarkedPath(output: string): string | null {
+  const start = output.lastIndexOf(PATH_START);
+  if (start < 0) return null;
+  const from = start + PATH_START.length;
+  const end = output.indexOf(PATH_END, from);
+  if (end < 0) return null;
+  const value = output.slice(from, end).trim();
+  return value || null;
+}
+
+export interface LoginShellPathOptions {
+  shell?: string;
+  home?: string;
+  timeoutMs?: number;
+}
+
+/** Ask the user's login shell for its PATH. Async and never throws: runs with
+ *  cwd = home (never an opened repo, whose rc hooks could act on it), stdin
+ *  ignored, killed after `timeoutMs`; any failure resolves null so callers
+ *  fall back to the fixed candidates. */
+export function loadLoginShellPath(opts: LoginShellPathOptions = {}): Promise<string | null> {
+  const shell = opts.shell ?? process.env.SHELL;
+  const home = opts.home ?? os.homedir();
+  if (process.platform === 'win32' || !shell || !path.isAbsolute(shell)) return Promise.resolve(null);
+  return new Promise((resolve) => {
+    try {
+      const child = execFile(
+        shell,
+        ['-ilc', `printf '${PATH_START}%s${PATH_END}' "$PATH"`],
+        { cwd: home, encoding: 'utf8', timeout: opts.timeoutMs ?? LOGIN_SHELL_TIMEOUT_MS, killSignal: 'SIGKILL', maxBuffer: 1024 * 1024 },
+        (err, stdout) => {
+          if (err) { resolve(null); return; }
+          resolve(parseMarkedPath(String(stdout)));
+        },
+      );
+      child.stdin?.end();
+    } catch {
+      resolve(null);
+    }
+  });
+}
+
+let loginPathCache: string | null = null;
+let loginPathWarm: Promise<string | null> | null = null;
+
+/** Start (once) reading the login-shell PATH in the background. Called at app
+ *  start; Moa never waits on it — until it lands, resolution uses PATH and
+ *  the fixed locations only. */
+export function warmLoginShellPath(): Promise<string | null> {
+  if (!loginPathWarm) {
+    loginPathWarm = loadLoginShellPath().then((value) => {
+      loginPathCache = value;
+      if (value) console.log('[claude] login shell PATH loaded');
+      return value;
+    });
+  }
+  return loginPathWarm;
+}
+
+function cachedLoginShellPath(): string | null {
+  if (!loginPathWarm) void warmLoginShellPath();
+  return loginPathCache;
 }
 
 let lastLogged: string | null | undefined;
@@ -103,7 +251,10 @@ export function resolveClaudeExecutable(): string | null {
     platform: process.platform,
     env: process.env,
     homedir: os.homedir(),
-    isFile,
+    isFile: isExecutableFile,
+    readDir,
+    readText,
+    loginShellPath: cachedLoginShellPath,
   });
   if (found !== lastLogged) {
     lastLogged = found;

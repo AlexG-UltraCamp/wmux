@@ -9,3 +9,9 @@
   run), then in `~/.local/bin`, the npm global folder and Homebrew's
   `/opt/homebrew/bin` and `/usr/local/bin`. The welcome screen and Moa use
   the same check, so they always agree.
+- **Moa also finds Claude Code installed through nvm, fnm or Volta, even when
+  wmux is opened from Finder or the Dock.** An app opened that way does not
+  get the PATH your terminal builds. wmux now also checks those version
+  managers' folders, and reads your login shell's PATH once in the background
+  (from your home folder, for at most a few seconds). A `claude` file that is
+  not allowed to run is skipped.
