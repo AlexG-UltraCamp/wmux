@@ -633,4 +633,10 @@ export const fr = {
   'moa.fleetAnswer.reason.complete': "tour terminé",
   'moa.fleetAnswer.untitled': "(sans titre)",
   'moa.fleetAnswer.omitted': "Certaines lignes sont omises. Ouvrez Fleet pour voir le tableau complet.",
+  'git.secret.file': "{path} : ce fichier contient des mots de passe ou des clés, il n'a donc pas été envoyé. Retirez-le de la modification (ou ajoutez-le à .gitignore) et réessayez.",
+  'git.secret.value': "{path}, ligne {line}, ressemble à un mot de passe ou une clé d'API, il n'a donc pas été envoyé. Retirez-le du code et réessayez.",
+  'git.secret.scanFailed': "wmux n'a pas pu lire cette modification pour y chercher des mots de passe ou des clés, elle n'a donc pas été envoyée. Réessayez ; si l'échec persiste, cette vérification peut être désactivée dans Paramètres › Général.",
+  'git.secret.more': "(et {count} de plus)",
+  'settings.secretGuard': "Bloquer les mots de passe et les clés dans les commits, push et PR",
+  'settings.secretGuardDesc': "Commit, Push et Créer une PR dans la page Git, l'adoption d'une tâche et la livraison de Moa refusent une modification qui ajoute un fichier .env, une clé privée ou une clé d'API.",
 } as const;

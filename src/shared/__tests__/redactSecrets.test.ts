@@ -24,6 +24,22 @@ describe('redactSecrets', () => {
     expect(redactSecrets('session q8Zr2LpX0vKt9mNw4YcB7sHd ok')).toBe(`session ${REDACTED} ok`);
   });
 
+  it.each([
+    'sk-abcdefghijklmnop',
+    `ghp_${'a1B2'.repeat(5)}`,
+    'xoxb-12345678',
+    'auth xK9mQ2pL7vR4nT8wZ3yB6cF1hJ5',
+    'TOKEN=xq8Zr2LpX0vKt9mNw4YcB7sHd',
+  ])('keeps masking short and x-led values: %s', (s) => {
+    const secret = s.split(/[ =]/).at(-1) ?? s;
+    expect(redactSecrets(`log ${s} end`)).not.toContain(secret);
+  });
+
+  it('masks a token as a whole even when a newer key shape matches its start', () => {
+    const token = `sk_live_${'4eC3'.repeat(6)}.Sensitive12`;
+    expect(redactSecrets(`log ${token} end`)).toBe(`log ${REDACTED} end`);
+  });
+
   it('keeps the inline URL credential masking the IPC log uses', () => {
     expect(maskInlineCredentials('http://h/x?token=abc&y=1')).toBe('http://h/x?token=[redacted]&y=1');
     expect(redactSecrets('open http://h/#wmux-desktop-code=zzz')).toContain('wmux-desktop-code=[redacted]');

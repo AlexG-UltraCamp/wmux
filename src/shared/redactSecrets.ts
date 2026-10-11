@@ -3,8 +3,12 @@
 // (main/ipc/wrapHandler.ts), and key-shaped values — OpenAI/Anthropic `sk-…`,
 // GitHub `ghp_…`/`github_pat_…`, AWS `AKIA…`/`ASIA…`, Slack `xox?-…`, private
 // key headers, a long random string after a key/secret/token/password name,
-// and any other long random-looking token. Pure, no Node imports, so main,
-// the daemon and the CLI share it.
+// and any other long random-looking token — plus every key shape the outbound
+// secret guard blocks (shared/secretGuard.ts KEY_RULES), so a key that cannot
+// be committed is not logged either. Pure, no Node imports, so main, the
+// daemon and the CLI share it.
+
+import { KEY_RULES } from './secretGuard';
 
 export const REDACTED = '[redacted]';
 
@@ -24,6 +28,14 @@ const KEY_SHAPES: readonly RegExp[] = [
   /\b(?:gh[pousr]_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,})/g,
   /\b(?:AKIA|ASIA)[0-9A-Z]{16}\b/g,
   /\bxox[abposr]-[A-Za-z0-9-]{8,}/g,
+];
+
+/** Applied after everything above, so they only ever mask more: the guard's
+ *  key shapes, Google API keys and JWTs. */
+const MORE_SHAPES: readonly RegExp[] = [
+  ...KEY_RULES.map(([, re]) => new RegExp(re.source, 'g')),
+  /\bAIza[0-9A-Za-z_-]{35}/g,
+  /\beyJ[A-Za-z0-9_-]{10,}\.eyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}/g,
 ];
 
 /** `name = value` where the name says secret; the value is masked. */
@@ -50,5 +62,6 @@ export function redactSecrets(s: string): string {
   for (const re of KEY_SHAPES) out = out.replace(re, REDACTED);
   out = out.replace(ASSIGNED, (m, name: string, value: string) => (value === REDACTED ? m : `${name}${REDACTED}`));
   out = out.replace(LONG_TOKEN, (m) => (m.includes(REDACTED) || !looksRandom(m) ? m : REDACTED));
+  for (const re of MORE_SHAPES) out = out.replace(re, REDACTED);
   return out;
 }

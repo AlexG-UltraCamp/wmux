@@ -634,4 +634,10 @@ export const tr = {
   'moa.fleetAnswer.reason.complete': "tur tamamlandı",
   'moa.fleetAnswer.untitled': "(başlıksız)",
   'moa.fleetAnswer.omitted': "Bazı satırlar atlandı. Panonun tamamı için Fleet'i açın.",
+  'git.secret.file': "{path}: bu dosya parola veya anahtar içerdiği için yüklenmedi. Değişiklikten çıkarın (veya .gitignore'a ekleyin) ve tekrar deneyin.",
+  'git.secret.value': "{path}, {line}. satır parola veya API anahtarına benziyor, bu yüzden yüklenmedi. Koddan çıkarıp tekrar deneyin.",
+  'git.secret.scanFailed': "wmux bu değişikliği parola ve anahtar kontrolü için okuyamadı, bu yüzden yüklenmedi. Tekrar deneyin; sürerse bu kontrol Ayarlar › Genel bölümünden kapatılabilir.",
+  'git.secret.more': "(ve {count} tane daha)",
+  'settings.secretGuard': "Commit, push ve PR'larda parolaları ve anahtarları engelle",
+  'settings.secretGuardDesc': "Git sayfasındaki Commit, Push ve PR oluştur, bir görevi devralma ve Moa teslimi; .env dosyası, özel anahtar veya API anahtarı ekleyen bir değişikliği reddeder.",
 } as const;
