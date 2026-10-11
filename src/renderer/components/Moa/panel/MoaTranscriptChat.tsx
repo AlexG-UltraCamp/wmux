@@ -31,6 +31,7 @@ import type { MoaApproval } from '../../../../shared/moa';
 import '../moa.css';
 import { mergeLocalFleetEvents } from './localFleetEvents';
 import { MoaGoalStrip } from '../MoaGoalStrip';
+import { isClaudeFirstRunScreen } from '../../../../shared/claudeFirstRun';
 
 /** The preload's `deck.moa.transcript` (main reads the HQ brain; no pty id). */
 export type MoaTranscriptApi = NonNullable<NonNullable<NonNullable<Window['electronAPI']>['deck']>['moa']>['transcript'];
@@ -451,6 +452,24 @@ export default function MoaTranscriptChat({ ptyId, busy, onSend, onInterrupt, on
                 <UserText>{item.text}</UserText>
                 {item.failed === undefined
                   ? <p className="wmux-chat-pending-caption">{t('chat.pendingSent')}</p>
+                  : item.tuiDialog && isClaudeFirstRunScreen(item.tuiDialog.excerpt)
+                  // Claude Code's one-time setup (theme, sign-in): the raw
+                  // screen means nothing here, so say plainly what to do.
+                  ? <div className="wmux-chat-pending-caption flex flex-col gap-1.5" role="alert" data-moa-chat-first-run>
+                      <strong>{t('moa.panel.firstRunTitle')}</strong>
+                      <span>{t('moa.panel.firstRunBody')}</span>
+                      <ol className="list-decimal pl-5">
+                        <li>{t('moa.panel.firstRunStep1')}</li>
+                        <li>{t('moa.panel.firstRunStep2')}</li>
+                        <li>{t('moa.panel.firstRunStep3')}</li>
+                      </ol>
+                      <div className="flex flex-wrap items-center gap-2">
+                        <Button variant="secondary" size="sm" onClick={onTerminal} data-moa-chat-dialog-terminal>{t('moa.panel.firstRunOpen')}</Button>
+                        <button type="button" className="underline underline-offset-2" disabled={busy} onClick={() => retrySend(item)} data-moa-chat-retry>
+                          {t('moa.panel.retrySend')}
+                        </button>
+                      </div>
+                    </div>
                   : item.tuiDialog
                   // A dialog only the TUI shows refused the send: say what it
                   // asks and offer the way to it, since the chat hides the

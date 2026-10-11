@@ -729,6 +729,44 @@ describe('MoaTranscriptChat — review fixes (#1808)', () => {
       useStore.setState({ moa: prev.moa, brainThreads: prev.brainThreads });
     }
   });
+  it('a send refused by Claude Code first-run setup shows plain steps, not the raw theme picker', async () => {
+    const { useStore } = await import('../../../../stores');
+    const prev = useStore.getState();
+    try {
+      useStore.setState({ moa: { ...(prev.moa ?? {}), hq: { workspaceId: 'ws-hq', state: 'ok' } } as never, brainThreads: {} });
+      const { api } = fakeApi();
+      const onSend = vi.fn(async () => ({ ok: true }));
+      const onTerminal = vi.fn();
+      await act(async () => root.render(<MoaTranscriptChat ptyId="pty-hq" busy={false} onSend={onSend} onInterrupt={vi.fn()} onTerminal={onTerminal} api={api} />));
+      await type('Check the release');
+      await act(async () => input().dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true })));
+      await act(async () => root.render(<MoaTranscriptChat ptyId="pty-hq" busy onSend={onSend} onInterrupt={vi.fn()} onTerminal={onTerminal} api={api} />));
+      await act(async () => {
+        useStore.setState({ brainThreads: { 'ws-hq': { status: 'idle', messages: [
+          { id: 'm1', role: 'user', text: 'Check the release', ts: Date.now() },
+          { id: 'm2', role: 'assistant', text: '', ts: Date.now(), status: 'error',
+            errorText: 'Claude Code is waiting on a prompt of its own. Answer it in the terminal, then send your message again.',
+            tuiDialog: { excerpt: '❯ ✔ Dark mode\nLight mode\nDark mode (colorblind-friendly)\nSyntax theme: Monokai Extended (ctrl+t to disable)' } },
+        ] } } as never });
+        root.render(<MoaTranscriptChat ptyId="pty-hq" busy={false} onSend={onSend} onInterrupt={vi.fn()} onTerminal={onTerminal} api={api} />);
+      });
+      const bubble = host.querySelector('[data-moa-chat-pending]') as HTMLElement;
+      expect(bubble.querySelector('[data-moa-chat-dialog]')).toBeNull();
+      const dialog = bubble.querySelector('[data-moa-chat-first-run]') as HTMLElement;
+      expect(dialog.textContent).toContain('moa.panel.firstRunTitle');
+      expect(dialog.querySelectorAll('li')).toHaveLength(3);
+      // The raw terminal screen is not shown.
+      expect(dialog.textContent).not.toContain('Syntax theme');
+      const button = dialog.querySelector('[data-moa-chat-dialog-terminal]') as HTMLButtonElement;
+      expect(button.textContent).toBe('moa.panel.firstRunOpen');
+      await act(async () => { button.click(); });
+      expect(onTerminal).toHaveBeenCalledTimes(1);
+      // Answering there is the user's job; nothing was sent again on the click.
+      expect(onSend).toHaveBeenCalledTimes(1);
+    } finally {
+      useStore.setState({ moa: prev.moa, brainThreads: prev.brainThreads });
+    }
+  });
 });
 
 describe('Moa transcript local Fleet answers', () => {
