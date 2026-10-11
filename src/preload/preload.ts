@@ -9,6 +9,7 @@ import {
   BROWSER_POLICY_IPC,
   type BrowserPolicyReadResult,
   type BrowserPolicyWritePayload,
+  type BrowserPolicyGrantsPayload,
   type BrowserPolicyWriteResult,
 } from '../shared/browserPolicy';
 import type {
@@ -1327,6 +1328,9 @@ const electronAPI = {
         ipcRenderer.invoke(BROWSER_POLICY_IPC.get, { workspaceId, paneId }),
       set: (payload: BrowserPolicyWritePayload): Promise<BrowserPolicyWriteResult> =>
         ipcRenderer.invoke(BROWSER_POLICY_IPC.set, payload),
+      // Revoke standing consent ("Always on this pane"); revocation only.
+      grants: (payload: BrowserPolicyGrantsPayload): Promise<BrowserPolicyWriteResult> =>
+        ipcRenderer.invoke(BROWSER_POLICY_IPC.grants, payload),
     },
     onDiscarded: (callback: (surfaceId: string) => void) => {
       const listener = (_e: Electron.IpcRendererEvent, surfaceId: string) => callback(surfaceId);
@@ -2028,10 +2032,13 @@ document.addEventListener('DOMContentLoaded', () => {
       ipcRenderer.removeListener(IPC.PERMISSION_PROMPT_OPEN, listener);
     };
   },
-  resolve: (promptId: string, approved: boolean) =>
+  // `opts.remember` ("Always on this pane", browser-action prompts only) is
+  // added to the payload only when set, so every other resolve is unchanged.
+  resolve: (promptId: string, approved: boolean, opts?: { remember?: boolean }) =>
     ipcRenderer.invoke(IPC.PERMISSION_PROMPT_RESOLVE, {
       promptId,
       approved,
+      ...(opts?.remember === true && { remember: true }),
     }) as Promise<{ ok: boolean; error?: string }>,
   onClosed: (callback: (payload: { promptId: string }) => void) => {
     const listener = (_event: unknown, payload: { promptId: string }) => callback(payload);
