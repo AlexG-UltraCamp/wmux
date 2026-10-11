@@ -109,6 +109,8 @@ import {
   type WebTlsConfig,
 } from '../../shared/web';
 import type { RemotePaneSummary, RemoteResumeInfo } from '../../shared/remoteHosts';
+import { agentDisplayToSlug } from '../../shared/agentIdentity';
+import { isWslShell } from '../../shared/imagePaste';
 import { normalizeResumeCwd, type ResumeBinding } from '../../shared/agentResume';
 import { assistantPreview } from '../../shared/assistantPreview';
 import { capSnapshot } from './snapshotWindow';
@@ -308,7 +310,8 @@ function decodeTurnCursor(
  *                              cursor-paged channel messages (oldest-first,
  *                              default 50 / max 200)
  *   POST /api/channels/:id/ack  advance the human seat's read cursor
- *                              (clamped, advance-only; no-seat → 400)
+ *                              (clamped, advance-only; the observer cursor
+ *                              when there is no seat)
  *   POST /api/channels/:id/join take the human seat (idempotent, full
  *                              history, archived → 400); input grant required
  *
@@ -3413,12 +3416,22 @@ export class WebTerminalServer {
         ...(() => {
           const state = this.deps.agentState?.(s.id);
           const agentName = s.agent?.displayName ?? state?.agentName ?? null;
-          if (!agentName) return {};
+          // #1754 — the canonical answer as a slug, never the role label (and
+          // never hidden by an empty one): a mirror keys native Windows
+          // Codex's newline on it, and it drops when the agent exits.
+          const agentSlug = agentDisplayToSlug(state?.agentName ?? '');
+          if (!agentName) return agentSlug ? { agentSlug } : {};
           return {
             agentName,
             ...(state && isRemoteAgentStatus(state.agentStatus) ? { agentStatus: state.agentStatus } : {}),
+            ...(agentSlug ? { agentSlug } : {}),
           };
         })(),
+        // #1754 — the other two facts that newline needs, as the local pane
+        // reads them: the PTY's OS, and whether its shell enters WSL (the
+        // local pane's predicate, over the same `cmd`). Additive-optional.
+        hostPlatform: process.platform,
+        wsl: s.wslTarget !== undefined || isWslShell(s.cmd),
       });
       byId.set(id, entry);
     }
@@ -8832,7 +8845,8 @@ export class WebTerminalServer {
   emitChatQueue(event: ChatQueueEvent): void {
     if (!this.server || this.opts?.allowTranscript !== true) return;
     const body = JSON.stringify({ sessionId: event.sessionId, clientMessageId: event.clientMessageId, state: event.state,
-      ...(event.reason ? { reason: event.reason } : {}), ...(event.deliver ? { deliver: event.deliver } : {}), at: event.at });
+      ...(event.reason ? { reason: event.reason } : {}), ...(event.deliver ? { deliver: event.deliver } : {}),
+      ...(event.holdReason ? { holdReason: event.holdReason } : {}), at: event.at });
     this.deliverChatEvent(event.sessionId, () => ({ event: 'chat.queue', body }), (principal) => chatOwner(principal) === event.owner);
   }
 
@@ -10195,6 +10209,9 @@ function approvalWire(r: ApprovalRequest, caps: ClientCaps = { terminalPromptAns
       // A hint for the client's own confirm step — computed at creation from the
       // call's full command. Never a permission.
       ...(r.risk ? { risk: r.risk } : {}),
+      // When Claude denies the dialog by itself (its unattended countdown), for
+      // every client: a time, never agent-authored text. Only while pending.
+      ...(r.autoDenyAt && r.state === 'pending' ? { autoDenyAt: r.autoDenyAt } : {}),
       ...(parsed
         ? {
             ...(r.question ? { question: r.question } : {}),

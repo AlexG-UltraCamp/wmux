@@ -5366,6 +5366,25 @@ describe('WebTerminalServer', () => {
       expect(await read(OLD_IOS)).toBe(GOLDEN_OLD_IOS);
     });
 
+    it('a terminal_prompt\'s auto-deny deadline reaches every client while it is pending', async () => {
+      const info = await startRW();
+      const AT = '2027-01-15T08:01:58.000Z';
+      approvalRecords.push(
+        mkApproval({ id: 'g-ad', kind: 'terminal_prompt', toolName: 'Bash', summary: 'rm -r x', autoDenyAt: AT }),
+        mkApproval({
+          id: 'g-ad-done', kind: 'terminal_prompt', toolName: 'Bash', summary: 'ls', state: 'resolved', autoDenyAt: AT,
+          pressedAt: 1_700_000_000_010, decision: 'approve', selectedChoiceKey: '1', resolvedBy: 'device Phone (d1)', resolvedAt: 1_700_000_000_011,
+        }),
+      );
+      for (const headers of [{}, OLD_IOS]) {
+        const body = await (await fetch(`${base()}/api/approvals`, { headers: { ...bearer(info.token as string), ...headers } })).json() as {
+          pending: Array<Record<string, unknown>>; recentlyResolved: Array<Record<string, unknown>>;
+        };
+        expect(body.pending.find((r) => r.id === 'g-ad')?.autoDenyAt).toBe(AT);
+        expect(body.recentlyResolved.find((r) => r.id === 'g-ad-done')).not.toHaveProperty('autoDenyAt');
+      }
+    });
+
     it('the SSE approval nudges are byte-identical (minus the per-run epoch)', async () => {
       const info = await startRO();
       for (const r of legacyRecords()) emitApproval(r.state === 'pending' ? 'create' : 'resolve', r);
@@ -9596,9 +9615,9 @@ describe('WebTerminalServer', () => {
       // Named workspace sorts before the unnamed one.
       expect(body.workspaces.map((w) => w.id)).toEqual(['ws-1', 'ws-legacy']);
       expect(body.workspaces[0].name).toBe('Workspace 1');
-      expect(body.workspaces[0].panes).toEqual([{ sessionId: 's1', shell: 'pwsh', cwd: '/x', lastActivity: '2020-01-01T00:00:00.000Z' }]);
+      expect(body.workspaces[0].panes).toEqual([{ sessionId: 's1', shell: 'pwsh', cwd: '/x', lastActivity: '2020-01-01T00:00:00.000Z', hostPlatform: process.platform, wsl: false }]);
       expect(body.workspaces[1].name).toBe('');
-      expect(body.workspaces[1].panes).toEqual([{ sessionId: 's2', shell: 'pwsh', cwd: '/y', lastActivity: '2020-01-01T00:00:00.000Z' }]);
+      expect(body.workspaces[1].panes).toEqual([{ sessionId: 's2', shell: 'pwsh', cwd: '/y', lastActivity: '2020-01-01T00:00:00.000Z', hostPlatform: process.platform, wsl: false }]);
       // The env-less session (s3) is omitted entirely.
       expect(body.workspaces.flatMap((w) => w.panes).map((p) => p.sessionId)).not.toContain('s3');
     });
