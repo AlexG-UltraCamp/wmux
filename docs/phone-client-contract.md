@@ -383,7 +383,7 @@ GET /api/config    → {allowInput, allowUpload, allowTranscript, inlineImages?,
                       terminalPromptDecline?, protocolVersion, minProtocolVersion,
                       serverVersion, hostPlatform}
 GET /api/sessions  → {sessions: [{id, cwd, spawnCwd?, cols, rows, state, agent, lastActivity,
-                      workspace?, workspaceId?, shell?, lastDetectedAgent?, cwdLeaf?,
+                      workspace?, workspaceId?, shell?, lastDetectedAgent?, agentAlive?, cwdLeaf?,
                       liveness?, lastFailure?, lastAssistantText?, surfaceTitle?, paneName?, role?, deferred?}]}
 POST /api/input?session=<id>   body: raw bytes
 ```
@@ -404,8 +404,36 @@ from a plain shell, which is how every shell pane's chip collapsed to one word.
 Two rules: treat an unrecognised value as "some agent" (the set is not closed on
 the wire), and read it as **identity, not presence**. It is persisted, so it
 outlives the agent process and every reboot — a pane that ran Claude keeps
-saying so while the shell sits at a prompt. What is running *now* is `liveness`
-and the `agent.liveness` frames, never this.
+saying so while the shell sits at a prompt. What is running *now* is `agentAlive`,
+`liveness` and the `agent.liveness` frames, never this.
+
+`agentAlive` says whether the pane's agent process is running right now. Use it,
+not `agent` or `lastDetectedAgent`, to decide whether a pane "has an agent":
+both labels are sticky and keep naming an agent that has exited.
+
+- `true`: the daemon tracks a live process of the pane's agent.
+- `false`: the daemon names no agent for the pane. The shell is back at its
+  prompt, the agent exited, or nothing shows one ran. `agent` may still say
+  `claude` on such a row. An agent launched a moment ago reads `false` until
+  its first hook, banner or process check names it.
+- absent: the daemon cannot tell, or predates the field. An agent is named
+  (by its hook or on screen) but no live process proves it yet. Fall back to
+  what you did before the field existed.
+
+It is the same process reading a Claude or Codex transcript binding's `/turns`
+`chat.agentAlive` is built on, and `/turns` adds one condition: the live agent
+must be the one whose conversation the pane is bound to. So a row `false` means
+`/turns` says `false`, and a `/turns` `true` means the row says `true`. The
+reverse does not hold: a row `true` with a `/turns` `false` is a running agent
+the pane has no matching conversation for yet, such as a fresh Claude before its
+first prompt. The row answers "is an agent running", `/turns` answers "is this
+conversation's agent running". A desktop chat-v2 record (a `managed` binding
+on `/turns`) is the one source the row also reads: both report its driver's
+state. These implications hold for Claude and Codex transcript bindings only.
+An OpenCode plugin binding and a desktop-managed record answer `/turns` from
+their own connection, which a list row does not open, so the row can say
+`false` there while `/turns` says `true`. The row is read from state the
+daemon already holds; polling it costs no process scan.
 
 `spawnCwd` is the directory the daemon actually started the pane in. Unlike
 `cwd`, which follows OSC 7 and the prompt and can name a deleted worktree or a

@@ -3,6 +3,7 @@ import type { PaneSettingsChoice } from './paneCodexSettings';
 import { buildAgentLaunch, type AgentLaunchChoice, type AgentLaunchOptions } from './agentLaunch';
 import { DesktopPhoneError, type DesktopPhoneBridge } from '../phone/DesktopPhoneBridge';
 import type { RunHistoryStore } from '../history/RunHistoryStore';
+import { agentAliveVerdict } from '../canonicalAgent';
 import { applyPaneAccount, handoffRowOf, paneAccountFailure, resolvePaneAccount, verifyHandoff, type ResolvedPaneAccount } from '../phone/paneAccount';
 import { resolveWorkspaceAccountKeys } from '../phone/workspaceAccountEnv';
 import { DESKTOP_ACCOUNT_ENV_COMMAND, parsePaneAccountFields, type StoredHandoffFrom } from '../../shared/phonePaneAccount';
@@ -153,6 +154,7 @@ import type { ChatCancelEvent } from '../chat/chatCancelObserver';
 import {
   ChatV2Cancels,
   buildChatObject,
+  chatV2AgentAlive,
   buildChatV2Object,
   cancelResponse,
   chatV2Identity,
@@ -911,9 +913,11 @@ interface WebTerminalServerDeps {
    * daemon.getAgentName gives the desktop), for GET /api/workspaces. Resolved
    * per request: the reader is registered with the RPC handlers, which may run
    * after this server is built. Absent, or undefined for a session, means the
-   * pane carries no detected-agent fields.
+   * pane carries no detected-agent fields. `agentVerified` (a live attributed
+   * process proven) also feeds `/api/sessions` `agentAlive`; absent, that field
+   * is omitted.
    */
-  agentState?: (sessionId: string) => { agentName: string | null; agentStatus: AgentStatus } | undefined;
+  agentState?: (sessionId: string) => { agentName: string | null; agentStatus: AgentStatus; agentVerified?: boolean } | undefined;
   /**
    * #1342 — the daemon's resume state for a session, for GET /api/workspaces:
    * the captured conversation binding (already transcript-probed, so a purged
@@ -3144,6 +3148,23 @@ export class WebTerminalServer {
      */
     lastDetectedAgent?: string;
     /**
+     * Whether the pane's agent is running right now: the PRESENCE answer that
+     * `agent` and `lastDetectedAgent` refuse to be. `agentAliveVerdict` decides
+     * it from the daemon's canonical agent state, the same reading a Claude or
+     * Codex transcript binding's `/turns` `agentAlive` is built on. `/turns`
+     * also requires the live agent to own the bound conversation, so row false
+     * implies `/turns` false and `/turns` true implies row true, never the
+     * reverse. A live chat-v2 record answers from its driver instead, as its
+     * `/turns` does (see agentAliveRow). Map reads only: no process scan.
+     *
+     * `true`: a live, attributed process of the pane's agent. `false`: the
+     * daemon names no agent for the pane (shell back at its prompt, agent
+     * exited, or no evidence of one at all), whatever `agent` still says.
+     * ABSENT: the daemon cannot tell, or predates the field. An agent is named
+     * but no live process proves it yet, as for a moment after a launch.
+     */
+    agentAlive?: boolean;
+    /**
      * Last segment of `cwd` — the phone's label of last resort (#1319). See
      * `cwdLeafOf`. Absent for a pane whose cwd is empty or a bare root.
      *
@@ -3211,6 +3232,7 @@ export class WebTerminalServer {
         agent: s.agent?.displayName ?? s.lastDetectedAgent ?? null,
         lastActivity: s.lastActivity,
         ...(s.lastDetectedAgent ? { lastDetectedAgent: s.lastDetectedAgent } : {}),
+        ...this.agentAliveRow(s.id),
         ...cwdLeafOf(s.cwd),
         ...workspaceLabelOf(s.env),
         ...workspaceIdOf(s.env),
@@ -3247,6 +3269,17 @@ export class WebTerminalServer {
     for (const id of this.lastAssistantReads) {
       if (!liveIds.has(id)) this.lastAssistantReads.delete(id);
     }
+  }
+
+  /**
+   * The list row's `agentAlive`, or nothing. A live chat-v2 record answers
+   * `/turns` from its driver (a daemon child, not the pane shell's), so the row
+   * reads that record too; every other pane reads the canonical agent state.
+   */
+  private agentAliveRow(sessionId: string): { agentAlive?: boolean } {
+    const agentAlive = chatV2AgentAlive(this.deps.chatV2?.()?.bindingForPane(sessionId))
+      ?? agentAliveVerdict(this.deps.agentState?.(sessionId));
+    return agentAlive === undefined ? {} : { agentAlive };
   }
 
   /** The list row's `lastFailure`, without `message` unless the transcript grant is held. */
