@@ -20,6 +20,8 @@
  * running dot, which is entangled with hook state and cannot be shadowed.
  */
 
+import { redactSecrets } from './redactSecrets';
+
 export const DETECTION_LOG_VERSION = 1;
 
 /** Default window for matching a detector read to a hook edge (either order). */
@@ -247,7 +249,11 @@ export function parseDetectionLog(text: string): DetectionRecord[] {
     } catch {
       continue;
     }
-    if (isDetectionRecord(raw)) out.push(raw);
+    if (!isDetectionRecord(raw)) continue;
+    // A log written before redaction (or by hand) still never prints a key.
+    const r = raw as { r?: unknown };
+    if (typeof r.r === 'string') r.r = redactSecrets(r.r);
+    out.push(raw);
   }
   return out;
 }

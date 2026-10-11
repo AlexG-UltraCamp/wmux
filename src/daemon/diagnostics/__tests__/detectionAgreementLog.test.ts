@@ -69,6 +69,21 @@ describe('DetectionAgreementLog', () => {
     expect(read.r.length).toBe(MAX_RULE_LABEL_CHARS);
   });
 
+  it('never writes an API key from screen text to the log, even one the cut would split', () => {
+    const { log, lines, records } = setup();
+    const key = `sk-proj-${'A1b2'.repeat(8)}`;
+    log.noteHook(PTY, hookEvent('agent.user_prompt_submit'));
+    log.noteDetector(PTY, { agent: 'Claude Code', status: 'waiting', message: `Ready OPENAI_API_KEY=${key}` });
+    log.noteDetector(PTY, { agent: 'Claude Code', status: 'waiting', message: `${'y '.repeat(25)}ghp_${'a1B2'.repeat(9)}` });
+    const file = lines.join('');
+    expect(file).not.toContain(key);
+    expect(file).not.toContain('sk-proj');
+    expect(file).not.toContain('ghp_');
+    expect(file).not.toContain('a1B2a1B2');
+    const reads = records().filter((r) => 'src' in r && r.src === 'det') as { r: string }[];
+    expect(reads[0].r).toContain('[redacted]');
+  });
+
   it('skips panes whose hook was not routed by exact pty id', () => {
     const { log, records, setAuthority } = setup();
     setAuthority({ slug: 'claude', exact: false });

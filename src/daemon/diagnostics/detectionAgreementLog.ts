@@ -23,10 +23,12 @@
  * Off unless `diagnostics.detectionAgreement` is true in the daemon config.
  * Local file only; nothing here leaves the machine. The rule label is the
  * detector message, which can carry a few words of screen text, so it is
- * stripped of control characters and cut short.
+ * stripped of control characters, credentials masked (shared/redactSecrets.ts)
+ * and cut short.
  *
  * Best-effort throughout: a failure here must never disturb detection.
  */
+import { redactSecrets } from '../../shared/redactSecrets';
 import { agentDisplayToSlug } from '../../shared/agentIdentity';
 import {
   DETECTION_LOG_VERSION,
@@ -225,7 +227,8 @@ export class DetectionAgreementLog {
 
 function ruleLabel(message: string | undefined): string | undefined {
   if (!message) return undefined;
-  const clean = message.replace(CONTROL_CHARS_RE, ' ').replace(/\s+/g, ' ').trim();
+  // Redacted BEFORE the cut, so a key is never left half-visible at the end.
+  const clean = redactSecrets(message.replace(CONTROL_CHARS_RE, ' ').replace(/\s+/g, ' ').trim());
   if (!clean) return undefined;
   return clean.length > MAX_RULE_LABEL_CHARS ? clean.slice(0, MAX_RULE_LABEL_CHARS) : clean;
 }
