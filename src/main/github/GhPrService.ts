@@ -9,6 +9,7 @@
 // NO_COLOR — TaskPrService.GH_ENV와 동일), 버전≠인증 2단 게이트
 // (TaskPrService G3), ENOENT → 프로세스 수명 동안 조용히 미가용
 // (PrStatusCache.ghAvailable 패턴), never-throw.
+import { parseReviewGuide } from '../../shared/prReviewGuide';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import {
@@ -397,10 +398,11 @@ export class GhPrService implements PrProvider {
     ) return cached.value;
     try {
       const { stdout } = await this.gh(
-        ['pr', 'view', String(number), '--json', 'number,url,comments,reviews'],
+        ['pr', 'view', String(number), '--json', 'number,url,body,comments,reviews'],
         repoPath,
       );
-      const json = JSON.parse(stdout) as GhDetailJson & { url?: string };
+      const json = JSON.parse(stdout) as GhDetailJson & { url?: string; body?: string };
+      const reviewGuide = parseReviewGuide(typeof json.body === 'string' ? json.body : '');
       // 인라인 리뷰 코멘트는 gh pr view가 누락 → gh api로 별도 조회(Codex P2).
       // {owner}/{repo}는 gh가 cwd repo로 치환. 실패는 무시(핵심 코멘트는 위에서 확보).
       let reviewComments: GhReviewComment[] = [];
@@ -426,7 +428,11 @@ export class GhPrService implements PrProvider {
       }
       const value: PrDetailResult = {
         ok: true,
-        detail: { number, comments: mapGhDetail(json, json.url ?? '', reviewComments, authorTypes ?? new Map()) },
+        detail: {
+          number,
+          comments: mapGhDetail(json, json.url ?? '', reviewComments, authorTypes ?? new Map()),
+          ...(reviewGuide ? { reviewGuide } : {}),
+        },
       };
       // An untyped read is not a success to keep: tried again on the next
       // change, or after UNTYPED_DETAIL_RETRY_MS if the PR stays put.

@@ -4,6 +4,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { DELIVERABLE_BRANCH_RE, deliverGoal, prNumberOf, revertDelivery, runDueMerges, type ExecResult, type MoaGoalDeliveryPorts } from '../moaGoalDelivery';
+import { parseReviewGuide } from '../../../shared/prReviewGuide';
 import { MOA_GOAL_AUTO_MERGE, MOA_GOAL_DEFAULT_HUMAN_ONLY, type MoaGoalContract, type MoaGoalVerification } from '../../../shared/moaGoal';
 
 let dir: string;
@@ -83,6 +84,19 @@ describe('deliverGoal — push the verified commit, open the PR', () => {
     expect(body).toContain(head);
     expect(d.revertRecipe[0]).toMatch(/^gh pr close 42/);
     expect(d.items[0].mergeAfter).toBeUndefined();
+  });
+
+  it('opens the body with a review order guide the Git page can step through', async () => {
+    const { p, gh } = ports();
+    await deliverGoal(contract(), verification(), p);
+    const create = gh.mock.calls[0][0];
+    const body = create[create.indexOf('--body') + 1] as string;
+    expect(body.indexOf('### Review order')).toBeLessThan(body.indexOf('### Done criteria'));
+    const guide = parseReviewGuide(body)!;
+    expect(guide.map((s) => s.target)).toEqual(['criteria', 'evidence', 'files']);
+    expect(guide[0].items).toEqual(['(1) a.txt says fixed']);
+    expect(guide[1].items).toEqual([`Proof for (1): \`/e/a.txt\` (sha256 ${'d'.repeat(12)})`, `Passed: project checks (\`npm test\`) on version \`${head.slice(0, 12)}\``]);
+    expect(guide[2].hint).toMatch(/^Optional/);
   });
 
   it('never force-pushes: a remote that moved ahead rejects the push, and the item says so', async () => {

@@ -2,6 +2,8 @@
 // 공유한다. 호스트 중립: GitHub(gh)이 v1 구현, GitLab(glab)은 후속 구현체가
 // 같은 shape로 채운다.
 
+import type { ReviewGuideStep } from './prReviewGuide';
+
 /** 정규화된 PR 요약 — 목록 행 렌더에 필요한 전부. */
 export interface PrSummary {
   readonly number: number;
@@ -40,6 +42,8 @@ export interface PrComment {
 export interface PrDetail {
   readonly number: number;
   readonly comments: PrComment[];
+  /** The PR body's review order guide (shared/prReviewGuide.ts), if it has one. */
+  readonly reviewGuide?: readonly ReviewGuideStep[];
 }
 
 /** 코멘트 본문 캡 — 초과분은 절단 + truncated 마킹(브라우저 유도). */
