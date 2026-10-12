@@ -9,6 +9,12 @@
 // and one daemon path. `wmux_turn_reason` tells the daemon the turn was
 // interrupted, which settles the pane without a "work finished" alarm.
 //
+// An interrupt with a prompt queued behind it is not a stop: the engine
+// starts the queued turn at once (its UserPromptSubmit already fired at
+// Enter) and does not wait on this hook. A Stop sent then would land inside
+// that turn and close its completion gate, so the mod waits a beat and sends
+// nothing when another turn has started.
+//
 // Deliberately not done here: observing the classic hooks (`classic.*`) or
 // adding a system prompt section (`prompt.compose`). A Team organization
 // seats Claude Code's default security plugin outermost, and it bypasses a
@@ -18,6 +24,9 @@ import type { EngineInterface, Register } from 'claude-code'
 
 /** Hard cap on the bridge run so a hung child never piles up. */
 const BRIDGE_TIMEOUT_MS = 10_000
+/** How long after an interrupt a queued turn has to start before the pane
+ *  counts as stopped. The engine starts a queued turn within milliseconds. */
+export const QUEUED_TURN_GRACE_MS = 500
 
 async function bridgePath($: EngineInterface): Promise<string | undefined> {
   const override = await $.env.get('WMUX_BRIDGE_PATH')
@@ -48,14 +57,28 @@ async function replayInterruptedStop($: EngineInterface, answer: string): Promis
 }
 
 export const register: Register = on => {
+  // The main loop's latest turn: an interrupted turn still current after the
+  // grace period had nothing queued behind it.
+  const state: { currentTurnId: string | undefined } = { currentTurnId: undefined }
+
+  on('turn.start', async ($, e, next) => {
+    const started = await next(e)
+    state.currentTurnId = started.turnId
+    return started
+  })
+
   on('turn.complete', async ($, e, next) => {
     const done = await next(e)
     // Subagent runs end with SubagentStop; only the main loop's interrupt is a gap.
-    if (e.agentId === undefined && e.reason === 'aborted') {
-      // Not awaited: the turn's end must never wait on wmux.
-      replayInterruptedStop($, e.answer).catch(err =>
-        $.ui.log(`wmux: Stop replay failed: ${String(err)}`, { to: 'debug' }),
-      )
+    if (e.agentId === undefined && e.reason === 'aborted' && state.currentTurnId === e.turnId) {
+      const interrupted = e.turnId
+      const answer = e.answer
+      $.clock.after(QUEUED_TURN_GRACE_MS, () => {
+        if (state.currentTurnId !== interrupted) return
+        replayInterruptedStop($, answer).catch(err =>
+          $.ui.log(`wmux: Stop replay failed: ${String(err)}`, { to: 'debug' }),
+        )
+      })
     }
     return done
   })

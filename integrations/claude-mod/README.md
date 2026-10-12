@@ -13,7 +13,9 @@ stopped the turn yourself.
 
 Turns that end normally, and turns a background task starts, already get
 their classic `UserPromptSubmit` / `Stop` (measured on 2.1.296). The mod sends
-nothing for them.
+nothing for them. Nor does it send anything when a queued prompt starts the
+next turn right after the interrupt (it waits 500 ms to see): that turn owns
+the pane, and its own `Stop` closes it.
 
 ## Install
 
