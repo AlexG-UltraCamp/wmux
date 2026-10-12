@@ -1,0 +1,78 @@
+import type { On, TurnCompleteInput } from 'claude-code'
+import { expect, mock, test } from 'claude-code/testing'
+
+const BRIDGE = '/home/u/.wmux/hooks/wmux-bridge.mjs'
+
+type Run = { argv: readonly string[]; payload: Record<string, unknown> }
+
+// The world beneath the mod: a wmux pane, a bridge on disk, and a recorder in
+// place of the bridge process.
+function world(on: On, env: Record<string, string> = {}): { runs: Run[]; settle: () => Promise<void> } {
+  const runs: Run[] = []
+  mock.env(on, { HOME: '/home/u', WMUX_PTY_ID: 'pty-1', ...env })
+  const clock = mock.clock(on)
+  on('fs.exists', ($, e) => ({ value: e.path === BRIDGE }))
+  on('session.id', () => ({ value: 'sess-1' }))
+  on('session.cwd', () => ({ value: '/work' }))
+  on('ui.log', () => ({ value: undefined }))
+  on('process.run', ($, e) => {
+    runs.push({ argv: e.argv, payload: JSON.parse(e.init?.stdin ?? '{}') })
+    return { value: { exitCode: 0, stdout: '', stderr: '', isStdoutTruncated: false, isStderrTruncated: false } }
+  })
+  on('turn.complete', ($, e) => ({ text: e.answer }))
+  return { runs, settle: () => clock.advance(0) }
+}
+
+function ended(fields: Partial<TurnCompleteInput> & Pick<TurnCompleteInput, 'reason'>): TurnCompleteInput {
+  return {
+    answer: 'partial essay',
+    durationMs: 900,
+    isAborted: fields.reason === 'aborted',
+    turnId: 't1',
+    ...fields,
+  } as TurnCompleteInput
+}
+
+test('an interrupted main turn replays the Stop the classic hooks never fire', async ($, on) => {
+  const w = world(on)
+  await $.turn.complete(ended({ reason: 'aborted' }))
+  await w.settle()
+  expect(w.runs.map(r => r.argv)).toEqual([['node', BRIDGE, 'Stop']])
+  expect(w.runs[0]?.payload).toEqual({
+    hook_event_name: 'Stop',
+    session_id: 'sess-1',
+    cwd: '/work',
+    last_assistant_message: 'partial essay',
+    wmux_source: 'mod',
+    wmux_turn_reason: 'aborted',
+  })
+})
+
+test('turns the classic hooks already close send nothing', async ($, on) => {
+  const w = world(on)
+  await $.turn.complete(ended({ reason: 'answer' }))
+  await $.turn.complete(ended({ reason: 'error' }))
+  await w.settle()
+  expect(w.runs).toEqual([])
+})
+
+test("an interrupted subagent run is not the pane's turn", async ($, on) => {
+  const w = world(on)
+  await $.turn.complete(ended({ reason: 'aborted', agentId: 'agent-7' }))
+  await w.settle()
+  expect(w.runs).toEqual([])
+})
+
+test('outside a wmux pane, or with no bridge installed, nothing runs', async ($, on) => {
+  const w = world(on, { WMUX_PTY_ID: '', WMUX_BRIDGE_PATH: '/nowhere/bridge.mjs' })
+  await $.turn.complete(ended({ reason: 'aborted' }))
+  await w.settle()
+  expect(w.runs).toEqual([])
+})
+
+test('WMUX_BRIDGE_PATH overrides the stable bridge location', async ($, on) => {
+  const w = world(on, { WMUX_BRIDGE_PATH: BRIDGE, HOME: '/elsewhere' })
+  await $.turn.complete(ended({ reason: 'aborted' }))
+  await w.settle()
+  expect(w.runs.map(r => r.argv[1])).toEqual([BRIDGE])
+})

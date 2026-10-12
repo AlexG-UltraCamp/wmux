@@ -157,6 +157,20 @@ describe('CompletionAlarm', () => {
     expect(confirmed).toHaveLength(1);
   });
 
+  it('an interrupted stop settles the turn without announcing it', () => {
+    alarm.observe('p1', 'claude', WORKING);
+    // The detector saw the screen go quiet after Esc and opened a window...
+    expect(alarm.observe('p1', 'claude', STOP)).toBe('hold');
+    // ...then the mod's interrupted Stop lands: no done alarm, now or later.
+    expect(alarm.observe('p1', 'claude', { class: 'stop', child: false, leftoverWork: 0, interrupted: true })).toBe('drop');
+    expect(alarm.observe('p1', 'claude', STOP)).toBe('drop');
+    vi.advanceTimersByTime(DEFAULT_ALARM_WINDOW_MS * 3);
+    expect(confirmed).toHaveLength(0);
+    // The next turn announces as usual.
+    alarm.observe('p1', 'claude', WORKING);
+    expect(alarm.observe('p1', 'claude', STOP)).toBe('hold');
+  });
+
   it('clean stop REPLACES a pending done window (detector then hook, R2)', () => {
     alarm.observe('p1', 'claude', WORKING);
     const resume1 = vi.fn();
@@ -310,6 +324,13 @@ describe('normalizeHookCue', () => {
     expect(normalizeHookCue(makeSignal({ payload: { wmux_leftover_work: -1 } }))).toEqual({ class: 'stop', child: false, leftoverWork: 0 });
     expect(normalizeHookCue(makeSignal({ payload: { wmux_leftover_work: '2' } }))).toEqual({ class: 'stop', child: false, leftoverWork: 0 });
     expect(normalizeHookCue(makeSignal({ payload: { wmux_leftover_work: NaN } }))).toEqual({ class: 'stop', child: false, leftoverWork: 0 });
+  });
+
+  it('maps a stop the mod marked interrupted', () => {
+    expect(normalizeHookCue(makeSignal({ payload: { wmux_turn_reason: 'aborted' } })))
+      .toEqual({ class: 'stop', child: false, leftoverWork: 0, interrupted: true });
+    expect(normalizeHookCue(makeSignal({ payload: { wmux_turn_reason: 'answer' } })))
+      .toEqual({ class: 'stop', child: false, leftoverWork: 0 });
   });
 
   it('maps subagent_stop to a child stop', () => {
