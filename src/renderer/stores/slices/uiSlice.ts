@@ -656,6 +656,14 @@ export interface UISlice {
   sidebarTaskGroupExpanded: Record<string, boolean>;
   setSidebarTaskGroupExpanded: (ownerId: string, expanded: boolean) => void;
 
+  /** Whether a workspace row's hover cluster carries the "Open in File
+   *  Explorer" and "Copy session info" buttons. On by default; the row's
+   *  context menu keeps its own "Open with" entry either way. */
+  sidebarShowExplorerButton: boolean;
+  setSidebarShowExplorerButton: (enabled: boolean) => void;
+  sidebarShowCopyInfoButton: boolean;
+  setSidebarShowCopyInfoButton: (enabled: boolean) => void;
+
   /** #1326 — show the auto-generated `w<ws>-<pane>` coordinate in the agent
    *  roster's muted trailer for panes that have no explicit label. On by
    *  default so nobody's roster changes without them touching the setting; a
@@ -1836,6 +1844,18 @@ export const createUISlice: StateCreator<StoreState, [['zustand/immer', never]],
   setSidebarTaskGroupExpanded: (ownerId, expanded) => set((state) => {
     if (!ownerId) return;
     state.sidebarTaskGroupExpanded[ownerId] = expanded;
+  }),
+
+  sidebarShowExplorerButton: true,
+
+  setSidebarShowExplorerButton: (enabled) => set((state) => {
+    state.sidebarShowExplorerButton = enabled;
+  }),
+
+  sidebarShowCopyInfoButton: true,
+
+  setSidebarShowCopyInfoButton: (enabled) => set((state) => {
+    state.sidebarShowCopyInfoButton = enabled;
   }),
 
   sidebarShowPaneCoordinates: true,
