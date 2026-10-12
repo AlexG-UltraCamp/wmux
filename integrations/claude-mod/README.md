@@ -40,6 +40,8 @@ Outside a wmux pane (no `WMUX_PTY_ID`) the mod does nothing.
 - A turn that dies on an API error is not filled in. The classic
   `StopFailure` covers rate limits, and with no way to tell whether it fired,
   a second report could overwrite its `rate_limit` reason.
+- A reload of the mod (an edit under `--plugin-dir`, or an update) forgets
+  the turn in flight, so interrupting that one turn is not reported.
 - On a Team organization, Claude Code's default security plugin bypasses a
   user mod's hooks on `classic.*` and `prompt.compose`. The mod relies on
   neither of them.

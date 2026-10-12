@@ -3,6 +3,7 @@ import { expect, mock, test } from 'claude-code/testing'
 
 const BRIDGE = '/home/u/.wmux/hooks/wmux-bridge.mjs'
 const GRACE = 1_000
+const T0 = 1_760_000_000_000
 
 type Run = { argv: readonly string[]; payload: Record<string, unknown> }
 
@@ -11,7 +12,7 @@ type Run = { argv: readonly string[]; payload: Record<string, unknown> }
 function world(on: On, env: Record<string, string> = {}): { runs: Run[]; advance: (ms: number) => Promise<void> } {
   const runs: Run[] = []
   mock.env(on, { HOME: '/home/u', WMUX_PTY_ID: 'pty-1', ...env })
-  const clock = mock.clock(on)
+  const clock = mock.clock(on, { now: T0 })
   on('fs.exists', ($, e) => ({ value: e.path === BRIDGE }))
   on('session.id', () => ({ value: 'sess-1' }))
   on('session.cwd', () => ({ value: '/work' }))
@@ -50,6 +51,7 @@ test('an interrupted main turn replays the Stop the classic hooks never fire', a
     last_assistant_message: 'partial essay',
     wmux_source: 'mod',
     wmux_turn_reason: 'aborted',
+    wmux_turn_ended_at: T0,
   })
 })
 

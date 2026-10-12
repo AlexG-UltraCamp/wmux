@@ -690,6 +690,13 @@ export class HookIngest {
    * `broadcast`, the one place every status this ingest writes passes through.
    */
   private readonly leadTurnEnded = new Set<string>();
+  /**
+   * When each session's latest UserPromptSubmit landed. An interrupted-turn
+   * Stop from the Claude Code mod (integrations/claude-mod) is sent a second
+   * or more after the interrupt; a prompt that landed after the interrupt
+   * started a new turn the late Stop must not end.
+   */
+  private readonly lastPromptAt = new Map<string, number>();
   /** Claimed ptyIds already logged as refused, so a closed pane logs once (#1523). */
   private readonly refusedClaims = new Set<string>();
   /**
@@ -1068,6 +1075,15 @@ export class HookIngest {
       return { ok: true };
     }
 
+    // An interrupted-turn Stop (from the Claude Code mod) that lost the race
+    // to the next prompt: that prompt's turn owns the pane now, so this Stop
+    // must have no effect at all — not on the alarm's gate, the dedup ledger
+    // or the status.
+    if (this.isStaleInterruptedStop(signal, sessionId)) {
+      this.deps.log?.('debug', `[hooks] dropped interrupted Stop for ${sessionId}: a newer prompt started a turn`);
+      return { ok: true };
+    }
+
     // Hook authority: EVERY resolved signal marks the pane hook-governed for
     // this agent, including the non-emit kinds (SessionStart, per-tool
     // activity) — freshness tracks "the bridge is alive on this pane", not
@@ -1256,6 +1272,7 @@ export class HookIngest {
       // question kind: a gate or permission dialog has its own lifecycle.
       if (signal.kind === 'agent.user_prompt_submit') {
         this.deps.approvals?.expireForSession(sessionId, 'prompt-submitted', 'awaiting_input');
+        this.lastPromptAt.set(sessionId, this.now());
       }
       return this.broadcast(sessionId, {
         agent: agentSlugToDisplay(signal.agent),
@@ -1704,6 +1721,15 @@ export class HookIngest {
     this.alarm.observe(sessionId, slug, { class: 'answered' });
   }
 
+  private isStaleInterruptedStop(signal: AgentSignal, sessionId: string): boolean {
+    if (signal.kind !== 'agent.stop') return false;
+    const cue = normalizeHookCue(signal);
+    if (cue.class !== 'stop' || !cue.interrupted) return false;
+    const endedAt = signal.payload?.['wmux_turn_ended_at'];
+    const promptAt = this.lastPromptAt.get(sessionId);
+    return typeof endedAt === 'number' && promptAt !== undefined && promptAt > endedAt;
+  }
+
   /**
    * Drop every ledger + authority entry for a disposed pane. Wired to
    * session:died / session:destroyed so a long daemon lifetime does not
@@ -1713,6 +1739,7 @@ export class HookIngest {
   dropPty(sessionId: string): void {
     this.router.dropPty(sessionId);
     this.leadTurnEnded.delete(sessionId);
+    this.lastPromptAt.delete(sessionId);
     // Cancel any open provisional window for the disposed pane — a reused id
     // must start from an empty gate, not an inherited pending confirmation.
     this.alarm.dropPty(sessionId);

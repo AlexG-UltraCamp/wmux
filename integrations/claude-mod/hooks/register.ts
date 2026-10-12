@@ -13,7 +13,9 @@
 // starts the queued turn at once (its UserPromptSubmit already fired at
 // Enter) and does not wait on this hook. A Stop sent then would land inside
 // that turn and close its completion gate, so the mod waits a beat and sends
-// nothing when another turn has started.
+// nothing when another turn has started. A prompt typed just after that beat
+// can still beat the Stop to wmux, so the Stop carries the interrupt time and
+// the daemon drops it when a newer prompt already landed.
 //
 // Deliberately not done here: observing the classic hooks (`classic.*`) or
 // adding a system prompt section (`prompt.compose`). A Team organization
@@ -37,7 +39,12 @@ async function bridgePath($: EngineInterface): Promise<string | undefined> {
   return home ? `${home}/.wmux/hooks/wmux-bridge.mjs` : undefined
 }
 
-async function replayInterruptedStop($: EngineInterface, answer: string): Promise<void> {
+async function replayInterruptedStop(
+  $: EngineInterface,
+  answer: string,
+  endedAt: number,
+  stillCurrent: () => boolean,
+): Promise<void> {
   // Outside a wmux pane there is nobody to tell; the bridge would drop it.
   if (!(await $.env.get('WMUX_PTY_ID'))) return
   const bridge = await bridgePath($)
@@ -49,7 +56,10 @@ async function replayInterruptedStop($: EngineInterface, answer: string): Promis
     last_assistant_message: answer,
     wmux_source: 'mod',
     wmux_turn_reason: 'aborted',
+    wmux_turn_ended_at: endedAt,
   }
+  // The lookups above yield; a turn may have started meanwhile.
+  if (!stillCurrent()) return
   await $.process.run(['node', bridge, 'Stop'], {
     stdin: JSON.stringify(payload),
     timeoutMs: BRIDGE_TIMEOUT_MS,
@@ -73,9 +83,11 @@ export const register: Register = on => {
     if (e.agentId === undefined && e.reason === 'aborted' && state.currentTurnId === e.turnId) {
       const interrupted = e.turnId
       const answer = e.answer
+      const endedAt = await $.clock.now()
+      const stillCurrent = (): boolean => state.currentTurnId === interrupted
       $.clock.after(QUEUED_TURN_GRACE_MS, () => {
-        if (state.currentTurnId !== interrupted) return
-        replayInterruptedStop($, answer).catch(err =>
+        if (!stillCurrent()) return
+        replayInterruptedStop($, answer, endedAt, stillCurrent).catch(err =>
           $.ui.log(`wmux: Stop replay failed: ${String(err)}`, { to: 'debug' }),
         )
       })
