@@ -26,7 +26,7 @@ import type { EngineInterface, Register } from 'claude-code'
 const BRIDGE_TIMEOUT_MS = 10_000
 /** How long after an interrupt a queued turn has to start before the pane
  *  counts as stopped. The engine starts a queued turn within milliseconds. */
-export const QUEUED_TURN_GRACE_MS = 500
+export const QUEUED_TURN_GRACE_MS = 1_000
 
 async function bridgePath($: EngineInterface): Promise<string | undefined> {
   const override = await $.env.get('WMUX_BRIDGE_PATH')

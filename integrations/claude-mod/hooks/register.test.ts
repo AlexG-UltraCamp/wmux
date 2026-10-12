@@ -2,7 +2,7 @@ import type { On, TurnCompleteInput } from 'claude-code'
 import { expect, mock, test } from 'claude-code/testing'
 
 const BRIDGE = '/home/u/.wmux/hooks/wmux-bridge.mjs'
-const GRACE = 500
+const GRACE = 1_000
 
 type Run = { argv: readonly string[]; payload: Record<string, unknown> }
 
