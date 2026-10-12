@@ -365,6 +365,19 @@ export class CompletionAlarm {
  * `agent.stop_failure` is a turn END that is NOT a completion — see the case
  * below for why it rides `attention` rather than `stop`.
  */
+/**
+ * An interrupted-turn Stop (sent by the Claude Code mod a second or more after
+ * the interrupt, stamped `wmux_turn_ended_at`) that lost the race to the next
+ * prompt: `promptAt`, when the pane's latest UserPromptSubmit landed, is
+ * after the interrupt, so that prompt's turn owns the pane and the Stop must
+ * have no effect.
+ */
+export function isStaleInterruptedStop(signal: AgentSignal, promptAt: number | undefined): boolean {
+  if (signal.kind !== 'agent.stop' || signal.payload?.['wmux_turn_reason'] !== 'aborted') return false;
+  const endedAt = signal.payload['wmux_turn_ended_at'];
+  return typeof endedAt === 'number' && promptAt !== undefined && promptAt > endedAt;
+}
+
 export function normalizeHookCue(signal: AgentSignal): AlarmCue {
   switch (signal.kind) {
     case 'agent.activity':

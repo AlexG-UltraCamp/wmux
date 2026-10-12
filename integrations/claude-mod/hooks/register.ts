@@ -49,9 +49,11 @@ async function replayInterruptedStop(
   if (!(await $.env.get('WMUX_PTY_ID'))) return
   const bridge = await bridgePath($)
   if (!bridge || !(await $.fs.exists(bridge))) return
+  // No session_id: the bridge would rebind the pane's resume target to it,
+  // and after a resume the engine's id is not the transcript the pane resumes
+  // (the classic hooks derive that from transcript_path, which mods lack).
   const payload = {
     hook_event_name: 'Stop',
-    session_id: await $.session.id(),
     cwd: await $.session.cwd(),
     last_assistant_message: answer,
     wmux_source: 'mod',

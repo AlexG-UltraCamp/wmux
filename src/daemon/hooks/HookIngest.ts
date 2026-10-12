@@ -44,6 +44,7 @@ import {
   CompletionAlarm,
   normalizeHookCue,
   normalizeDetectorCue,
+  isStaleInterruptedStop,
   type AlarmCue,
   type ConfirmedWindow,
 } from '../../shared/hooks/CompletionAlarm';
@@ -1079,7 +1080,7 @@ export class HookIngest {
     // to the next prompt: that prompt's turn owns the pane now, so this Stop
     // must have no effect at all — not on the alarm's gate, the dedup ledger
     // or the status.
-    if (this.isStaleInterruptedStop(signal, sessionId)) {
+    if (isStaleInterruptedStop(signal, this.lastPromptAt.get(sessionId))) {
       this.deps.log?.('debug', `[hooks] dropped interrupted Stop for ${sessionId}: a newer prompt started a turn`);
       return { ok: true };
     }
@@ -1719,15 +1720,6 @@ export class HookIngest {
   noteAnswered(sessionId: string, slug?: string): void {
     if (!slug) return;
     this.alarm.observe(sessionId, slug, { class: 'answered' });
-  }
-
-  private isStaleInterruptedStop(signal: AgentSignal, sessionId: string): boolean {
-    if (signal.kind !== 'agent.stop') return false;
-    const cue = normalizeHookCue(signal);
-    if (cue.class !== 'stop' || !cue.interrupted) return false;
-    const endedAt = signal.payload?.['wmux_turn_ended_at'];
-    const promptAt = this.lastPromptAt.get(sessionId);
-    return typeof endedAt === 'number' && promptAt !== undefined && promptAt > endedAt;
   }
 
   /**

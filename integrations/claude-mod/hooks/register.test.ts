@@ -14,7 +14,6 @@ function world(on: On, env: Record<string, string> = {}): { runs: Run[]; advance
   mock.env(on, { HOME: '/home/u', WMUX_PTY_ID: 'pty-1', ...env })
   const clock = mock.clock(on, { now: T0 })
   on('fs.exists', ($, e) => ({ value: e.path === BRIDGE }))
-  on('session.id', () => ({ value: 'sess-1' }))
   on('session.cwd', () => ({ value: '/work' }))
   on('ui.log', () => ({ value: undefined }))
   on('process.run', ($, e) => {
@@ -46,7 +45,6 @@ test('an interrupted main turn replays the Stop the classic hooks never fire', a
   expect(w.runs.map(r => r.argv)).toEqual([['node', BRIDGE, 'Stop']])
   expect(w.runs[0]?.payload).toEqual({
     hook_event_name: 'Stop',
-    session_id: 'sess-1',
     cwd: '/work',
     last_assistant_message: 'partial essay',
     wmux_source: 'mod',

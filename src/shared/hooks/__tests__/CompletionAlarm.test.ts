@@ -2,6 +2,7 @@ import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import {
   CompletionAlarm,
   normalizeHookCue,
+  isStaleInterruptedStop,
   normalizeDetectorCue,
   DEFAULT_ALARM_WINDOW_MS,
 } from '../CompletionAlarm';
@@ -331,6 +332,16 @@ describe('normalizeHookCue', () => {
       .toEqual({ class: 'stop', child: false, leftoverWork: 0, interrupted: true });
     expect(normalizeHookCue(makeSignal({ payload: { wmux_turn_reason: 'answer' } })))
       .toEqual({ class: 'stop', child: false, leftoverWork: 0 });
+  });
+
+  it('treats an interrupted Stop as stale only once a later prompt landed', () => {
+    const stop = makeSignal({ payload: { wmux_turn_reason: 'aborted', wmux_turn_ended_at: 1_000 } });
+    expect(isStaleInterruptedStop(stop, 1_001)).toBe(true);
+    expect(isStaleInterruptedStop(stop, 999)).toBe(false);
+    expect(isStaleInterruptedStop(stop, undefined)).toBe(false);
+    // A classic Stop, or an interrupted one without a time, is never stale.
+    expect(isStaleInterruptedStop(makeSignal({ payload: { wmux_turn_ended_at: 1_000 } }), 2_000)).toBe(false);
+    expect(isStaleInterruptedStop(makeSignal({ payload: { wmux_turn_reason: 'aborted' } }), 2_000)).toBe(false);
   });
 
   it('maps subagent_stop to a child stop', () => {
