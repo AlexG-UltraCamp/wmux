@@ -11,7 +11,7 @@ const dir = mkdtempSync(path.join(root, '.native-core-verify-'));
 try {
   const worker = path.join(dir, 'verify.cjs');
   await build({ entryPoints: [path.join(root, 'bench/native-core-verify.ts')], outfile: worker, bundle: true, platform: 'node', format: 'cjs', logLevel: 'silent' });
-  const result = execFileSync(process.execPath, [worker], { cwd: root, encoding: 'utf8', stdio: ['ignore', 'pipe', 'inherit'], timeout: 600000 + Number(process.env.WMUX_NATIVE_SOAK_MS ?? 0),
+  const result = execFileSync(process.execPath, [worker], { cwd: root, encoding: 'utf8', stdio: ['ignore', 'pipe', 'inherit'], timeout: (process.platform === 'win32' ? 900000 : 600000) + Number(process.env.WMUX_NATIVE_SOAK_MS ?? 0),
     env: { ...process.env, WMUX_TERMINAL_CORE_MODULE: path.join(root, 'core/wmux-term/dist/native-core/index.cjs') } });
   process.stdout.write(result);
   const report = process.argv.find(arg => arg.startsWith('--report='))?.slice('--report='.length);

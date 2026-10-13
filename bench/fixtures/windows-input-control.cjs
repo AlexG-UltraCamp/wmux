@@ -28,7 +28,7 @@ const finish = (timedOut, event) => {
     pty.kill();
   }
 };
-const timer = setTimeout(() => finish(true), 120000);
+const timer = setTimeout(() => finish(true), 300000);
 pty.onData(text => {
   output += text;
   if (!sent && output.includes('READY')) { sent = true; pty.write(input); }

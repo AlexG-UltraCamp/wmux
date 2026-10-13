@@ -28,7 +28,7 @@ jobs:
         if: runner.os == 'Windows'
         # Bound cleanup too: the diagnostic must not prevent native qualification
         # or artifact retention if node-pty's ConPTY close itself blocks.
-        run: node -e "const r=require('node:child_process').spawnSync(process.execPath,['bench/fixtures/windows-input-control.cjs'],{stdio:'inherit',timeout:150000,killSignal:'SIGKILL'}); if(r.error) console.error(r.error.message);"
+        run: node -e "const r=require('node:child_process').spawnSync(process.execPath,['bench/fixtures/windows-input-control.cjs'],{stdio:'inherit',timeout:330000,killSignal:'SIGKILL'}); if(r.error) console.error(r.error.message);"
       - name: Retain Windows input baseline
         if: runner.os == 'Windows' && always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a

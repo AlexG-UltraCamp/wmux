@@ -54,7 +54,7 @@ function session(mode: string, args: string[] = [], onData?: (text: string, pty:
   const done = new Promise<{ output: string; exitCode: number; signal?: number }>((resolve, reject) => {
     // Console input is processed as key events on Windows. Keep the full 4 MiB
     // integrity check, with a longer deadline and byte-count diagnostics.
-    const timeoutMs = process.platform === 'win32' && mode === 'input' ? 120000 : 30000;
+    const timeoutMs = process.platform === 'win32' && mode === 'input' ? 300000 : 30000;
     const timer = setTimeout(() => {
       const pending = pty.pendingInputBytes;
       pty.dispose?.();
@@ -219,6 +219,7 @@ async function main() {
   checks.push('PTY: paused bulk output, UTF-8, final output before one exit');
   await verifyPausedDisposal();
   const input = Buffer.alloc(4 * 1024 * 1024, 'x');
+  const inputStarted = performance.now();
   let sent = false;
   const inputArgs = [String(input.length)];
   const inputProgress = path.resolve('out/native-input-progress.json');
@@ -231,6 +232,7 @@ async function main() {
     throw error;
   });
   assert.match(received.output, new RegExp(`DIGEST:${crypto.createHash('sha256').update(input).digest('hex')}`));
+  const inputElapsedMs = Math.round(performance.now() - inputStarted);
   checks.push('PTY: 4 MiB async input hash matches without blocking Node');
   let blocked = false;
   const killed = await session('blocked-input', [], (text, pty) => {
@@ -312,6 +314,6 @@ async function main() {
   const ring = new (loadNativeTerminalCore('ring-v1').NativeRing)(1024);
   ring.dispose(); ring.dispose(); assert.throws(() => ring.write(Buffer.from('x')), /disposed/);
   checks.push(`PTY: 1/6/32 concurrent sessions and ${cycles} lifecycle cycles`);
-  console.log(JSON.stringify({ platform: process.platform, arch: process.arch, checks, passed: checks.length, threadsBefore, threadsAfter, nativeWorkersAfter: native.nativeTransportWorkerCount(), soakMemory }, null, 2));
+  console.log(JSON.stringify({ platform: process.platform, arch: process.arch, checks, passed: checks.length, inputElapsedMs, threadsBefore, threadsAfter, nativeWorkersAfter: native.nativeTransportWorkerCount(), soakMemory }, null, 2));
 }
 main().catch(error => { console.error(error); process.exitCode = 1; });

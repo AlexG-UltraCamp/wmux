@@ -49,7 +49,12 @@ before treating Windows/Linux as qualified.
 The Windows resize fixture now starts raw console input before announcing READY,
 as required for Node's resize notifications, and exercises bundled and inbox
 ConPTY. Input integrity still checks the full 4 MiB payload; Windows records
-received-byte progress and permits two minutes for console key-event processing.
+received-byte progress and permits five minutes for console key-event processing.
+The independent node-pty control on Windows Server 2022 / Node 24.21.0 reached
+3,933,184 of 4,194,304 bytes after about 117 seconds, then exceeded the former
+120-second deadline. This demonstrates ongoing slow consumption in that control,
+not a Rust-only loss. Both backends still need the final full-payload hash; the
+native report records input elapsed time separately from lifecycle checks.
 
 Disposal must also keep draining discarded Windows output until EOF. Stopping
 the reader before `ClosePseudoConsole` returns can deadlock older ConPTY versions;
