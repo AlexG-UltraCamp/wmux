@@ -220,9 +220,16 @@ async function main() {
   await verifyPausedDisposal();
   const input = Buffer.alloc(4 * 1024 * 1024, 'x');
   let sent = false;
-  const received = await session('input', [String(input.length)], (text, pty) => {
+  const inputArgs = [String(input.length)];
+  const inputProgress = path.resolve('out/native-input-progress.json');
+  if (process.platform === 'win32') { fs.mkdirSync('out', { recursive: true }); inputArgs.push(inputProgress); }
+  const received = await session('input', inputArgs, (text, pty) => {
     if (!sent && text.includes('READY')) { sent = true; pty.write(input); }
-  }).done;
+  }).done.catch(error => {
+    if (process.platform === 'win32') console.error(JSON.stringify({ inputSent: sent,
+      childProgress: fs.existsSync(inputProgress) ? fs.readFileSync(inputProgress, 'utf8') : null }));
+    throw error;
+  });
   assert.match(received.output, new RegExp(`DIGEST:${crypto.createHash('sha256').update(input).digest('hex')}`));
   checks.push('PTY: 4 MiB async input hash matches without blocking Node');
   let blocked = false;

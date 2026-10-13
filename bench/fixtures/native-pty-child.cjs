@@ -21,21 +21,28 @@ if (mode === 'output' || mode === 'output-raw') {
   process.stdin.setRawMode(true);
   let received = 0;
   const expected = Number(process.argv[3]);
+  const progressFile = process.argv[4];
+  let nextProgress = 0;
+  const record = phase => {
+    if (progressFile) require('node:fs').writeFileSync(progressFile, JSON.stringify({ phase, received, expected, timestamp: Date.now() }));
+  };
   const hash = require('node:crypto').createHash('sha256');
   if (process.platform === 'win32') {
     setInterval(() => process.stdout.write(`INPUT-PROGRESS:${received}/${expected}\n`), 5000).unref();
   }
   process.stdin.on('data', data => {
     received += data.length; hash.update(data);
+    if (received >= nextProgress) { record('receiving'); nextProgress = received + 256 * 1024; }
     if (received > expected) throw new Error(`Unexpected input length: ${received} > ${expected}`);
     if (received === expected) {
+      record('complete');
       process.stdout.write(`DIGEST:${hash.digest('hex')}\n`, () => process.exit(0));
     }
   });
   // Let the stream's resume/read-start run before inviting a bulk write. On
   // Windows stdout is synchronous; advertising READY before installing the
   // reader lets the parent flood ConPTY while the child is still in that write.
-  setImmediate(() => process.stdout.write('READY\n'));
+  setImmediate(() => { record('reader-started'); process.stdout.write('READY\n'); record('ready-sent'); });
 } else if (mode === 'blocked-input') {
   process.stdin.setRawMode(true);
   process.stdout.write('READY\n');

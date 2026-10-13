@@ -24,6 +24,18 @@ jobs:
           cache: npm
       - run: npm install -g npm@11
       - run: npm ci
+      - name: Windows input baseline (diagnostic)
+        if: runner.os == 'Windows'
+        run: node bench/fixtures/windows-input-control.cjs
+      - name: Retain Windows input baseline
+        if: runner.os == 'Windows' && always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: windows-input-control
+          path: |
+            out/windows-input-control.json
+            out/node-input-progress.json
+          if-no-files-found: ignore
       - name: Generated Unicode table across checkout line endings
         run: npx vitest run scripts/__tests__/generateRustUnicode11.test.mjs
       - name: Install Rust toolchain
@@ -45,6 +57,7 @@ jobs:
           path: |
             native-terminal-report.json
             out/native-soak-mismatch-*.json
+            out/native-input-progress.json
           if-no-files-found: ignore
   soak:
     if: github.event_name == 'workflow_dispatch' && inputs.soak
