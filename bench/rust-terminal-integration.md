@@ -55,6 +55,8 @@ The independent node-pty control on Windows Server 2022 / Node 24.21.0 reached
 120-second deadline. This demonstrates ongoing slow consumption in that control,
 not a Rust-only loss. Both backends still need the final full-payload hash; the
 native report records input elapsed time separately from lifecycle checks.
+A longer node-pty control completed all 4 MiB with the expected hash and exit 0
+in 129,437 ms; see [the complete control report](results/windows-input-complete-control-20261014.json).
 
 Disposal must also keep draining discarded Windows output until EOF. Stopping
 the reader before `ClosePseudoConsole` returns can deadlock older ConPTY versions;

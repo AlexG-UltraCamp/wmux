@@ -22,7 +22,11 @@ const finish = (timedOut, event) => {
     matched: output.includes(`DIGEST:${expected}`), outputTail: output.slice(-1000),
     childProgress: fs.existsSync(progressFile) ? fs.readFileSync(progressFile, 'utf8') : null };
   fs.writeFileSync('out/windows-input-control.json', JSON.stringify(result, null, 2));
-  console.log(JSON.stringify(result, null, 2));
+  process.stdout.write(JSON.stringify(result, null, 2) + '\n', () => {
+    // The synthetic child has exited. Do not let node-pty's helper handles
+    // keep this standalone diagnostic alive after its report is durable.
+    if (!timedOut) process.exit(0);
+  });
   if (timedOut) {
     try { process.kill(pty.pid); } catch { /* The fixture may already have exited. */ }
     pty.kill();
