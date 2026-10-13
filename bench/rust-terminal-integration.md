@@ -360,3 +360,30 @@ need investigation.
 Remaining default/release gates: Windows 10/11 and WSL runtime/descendant cleanup,
 actual Linux desktop/Electron packaging, signed packaged-app QA, continuous
 eight-hour soak, and real AI teams. Full ANSI replacement is not complete.
+
+### Normal macOS packaged UI qualification (2026-10-14)
+
+The unsigned arm64 package was launched as a normal Electron desktop app with
+a unique suffix and short temporary HOME. Settings' native select saved Rust
+while the live daemon continued using Node and displayed restart guidance.
+After stopping both isolated hosts and relaunching, Settings and daemon RPC
+reported Rust. Six panes created through split buttons each ran a shell command
+and returned the expected Korean/emoji output. An app-only restart retained the
+same daemon PID and restored all six output markers; another command succeeded
+after reconnect. Selecting Node likewise kept the live Rust host unchanged until
+daemon restart, then reported Node and ran another command successfully.
+
+All recorded test app/daemon/shell processes exited, and the installed CLI shim
+was unchanged. `bench/results/rust-terminal-macos-ui-20261014.json` records the
+claim, observations, limits and hashes of local UI evidence. The verification
+driver now supports native-select interaction and an owned app-only restart.
+Its seven existing isolation/helper tests pass; the new paths were exercised
+against this package.
+
+This build disables the company/team UI (`COMPANY_MODE_ENABLED=false`). Six
+ordinary shell panes qualify terminal concurrency and reconnection, not actual
+AI-team orchestration or its memory footprint. Windows/Linux desktop packages,
+WSL and signed distribution remain unverified. The eight-hour soak started
+separately; a running soak is not a pass. Its runner allows 16 MiB of report
+output because eight hours of two-second memory samples exceed the default
+1 MiB child-output limit.
