@@ -23,7 +23,10 @@ const finish = (timedOut, event) => {
     childProgress: fs.existsSync(progressFile) ? fs.readFileSync(progressFile, 'utf8') : null };
   fs.writeFileSync('out/windows-input-control.json', JSON.stringify(result, null, 2));
   console.log(JSON.stringify(result, null, 2));
-  if (timedOut) pty.kill();
+  if (timedOut) {
+    try { process.kill(pty.pid); } catch { /* The fixture may already have exited. */ }
+    pty.kill();
+  }
 };
 const timer = setTimeout(() => finish(true), 120000);
 pty.onData(text => {
