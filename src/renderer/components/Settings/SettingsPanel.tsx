@@ -1,3 +1,4 @@
+import { TerminalEngineSetting } from './TerminalEngineSetting';
 import { QuickCommandsSection } from './QuickCommandsSection';
 import { SecretHookSetting } from './SecretHookSetting';
 import { createContext, useContext, useEffect, useMemo, useRef, useState, useCallback, type ReactNode } from 'react';
@@ -2062,6 +2063,7 @@ function TabTerminal() {
         </SettingRow>
       </SettingsSection>
       <SettingsSection title={t('settings.sectionPerformance')}>
+        <TerminalEngineSetting />
         <SettingRow id="retention" label={t('settings.hiddenPaneRetention')} description={t('settings.hiddenPaneRetentionDesc')}>
           <Toggle
             checked={hiddenPaneRetentionEnabled}
