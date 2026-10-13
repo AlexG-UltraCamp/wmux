@@ -146,11 +146,13 @@ async function main() {
       checks.push('WSL: selected distro command and exit (descendant cleanup requires separate qualification)');
     }
   }
-  let resizeRequested = false;
-  const resized = await session('resize', [], (text, pty) => {
-    if (!resizeRequested && text.includes('READY')) { resizeRequested = true; pty.resize(120, 40); }
-  }).done;
-  assert.match(resized.output, /RESIZED:120x40/);
+  for (const bundled of process.platform === 'win32' ? [true, false] : [false]) {
+    let resizeRequested = false;
+    const resized = await session('resize', [], (text, pty) => {
+      if (!resizeRequested && text.includes('READY')) { resizeRequested = true; pty.resize(120, 40); }
+    }, process.execPath, [fixture, 'resize'], bundled).done;
+    assert.match(resized.output, /RESIZED:120x40/);
+  }
   const tree = await session('tree').done;
   const grandchild = Number(tree.output.match(/CHILD:(\d+)/)?.[1]);
   assert.ok(grandchild > 0);

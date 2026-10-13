@@ -43,9 +43,16 @@ if (mode === 'output' || mode === 'output-raw') {
   process.stdout.write(`CHILD:${child.pid}\n`);
   setTimeout(() => process.exit(0), 100);
 } else if (mode === 'resize') {
-  process.stdout.write('READY\n');
   process.stdout.on('resize', () => {
     if (process.stdout.columns === 120 && process.stdout.rows === 40) process.stdout.write('RESIZED:120x40\n', () => process.exit(0));
   });
+  // Windows delivers resize notifications while reading a raw console input
+  // stream. Arm the reader and listener before inviting the parent to resize.
+  // https://nodejs.org/api/process.html#signal-events
+  if (process.platform === 'win32') {
+    process.stdin.setRawMode(true);
+    process.stdin.resume();
+  }
+  process.stdout.write('READY\n');
   setInterval(() => {}, 1000);
 } else { throw new Error(`Unknown mode: ${mode}`); }
