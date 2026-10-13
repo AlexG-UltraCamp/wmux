@@ -17,5 +17,14 @@ Windows changes:
   success/error handling. WSL Linux descendants still require runtime qualification.
 - Add a default no-op `MasterPty::clear` method, overridden by ConPTY.
 
-macOS/Linux use the upstream Unix spawning and PTY implementation. The wmux N-API
-adapter supplies bounded queues and dedicated read/write/wait threads separately.
+Unix changes:
+
+- Mark inherited descriptors close-on-exec instead of closing them in `pre_exec`.
+  This preserves Rust Command's spawn-error pipe and avoids Chromium's inherited
+  FD-ownership checks when loaded inside Electron. Linux uses `close_range` with
+  `CLOSE_RANGE_CLOEXEC`, falling back to per-descriptor `fcntl` where unavailable.
+  Other Unix targets use the per-descriptor path. Successful exec still closes
+  all non-stdio inherited descriptors.
+
+The wmux N-API adapter supplies bounded queues and dedicated read/write/wait
+threads separately.

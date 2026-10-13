@@ -7,6 +7,45 @@ is outside this change. This is experimental, not an all-platform release gate p
 
 ## Repeated validation — 2026-10-14
 
+### Follow-up: newline diagnosis and cross-platform failures
+
+The one-code-unit mismatch described below has now been reproduced as an extra
+CR in the **raw PTY stream before decoding**. A throttled native read saw
+530,015 bytes instead of 530,014; the native decoder and Node StringDecoder
+agreed. A control using Python `os.openpty` and `subprocess`, with neither Rust
+nor node-pty, reproduced CR duplication on its first cycle (530,034 bytes).
+With output postprocessing disabled in the synthetic child, the Python control
+passed 13 cycles / ten seconds. A separate node-pty cooked-output control passed
+30 cycles without reproducing it; reproduction depends on queue pressure.
+
+This matches Darwin's non-atomic ONLCR expansion: `ttyoutput` enqueues CR before
+LF and can ask the caller to retry LF when the queue fills between those writes.
+See [Apple's ttyoutput implementation](https://github.com/apple-oss-distributions/xnu/blob/main/bsd/kern/tty.c)
+and the [retained diagnostic summary](results/pty-newline-diagnosis-20261014.json).
+The original failed soak did not preserve its location; this identifies the
+subsequently reproduced mismatch class, not the exact lost historical sample.
+
+The verifier now uses `output-raw` (`stty -opost`, explicit CRLF) for byte-exact
+bulk/soak assertions and retains a cooked-output smoke. Production PTY defaults,
+bytes and decoder behavior are unchanged: legitimate CRs are never stripped.
+Reproduce the independent control with:
+
+```sh
+python3 bench/fixtures/pty-newline-probe.py --mode cooked --report out/pty-cooked.json
+python3 bench/fixtures/pty-newline-probe.py --mode raw --report out/pty-raw.json
+```
+
+The first hosted run passed macOS. Windows stopped at the generated Unicode
+table check because of checkout line endings; the generator now normalizes
+CRLF for comparison and source hashing, with tests that still reject changed
+width data. Linux passed the native verifier but failed Electron spawning:
+portable-pty closed Chromium-owned descriptors in `pre_exec`. Unix cleanup now
+marks descriptors close-on-exec, preserving both Chromium ownership until exec
+and Rust Command's exec-error pipe. Linux uses `close_range(CLOEXEC)` where
+available. A broken-interpreter regression checks that an actual exec failure
+reaches the caller without replaying the command. Hosted reruns are required
+before treating Windows/Linux as qualified.
+
 On macOS arm64 / Node 24.15.0, the combined Rust PTY/ring/text backend reduced
 peak daemon RSS and text-read latency in this synthetic snapshot workload.
 Each cell below is a median across three fresh daemons; backend order alternated.
@@ -50,15 +89,17 @@ local at the paths below.
 - `out/rust-validation-output-ab-20261014.json`
 - `out/rust-validation-summary-20261014.json`
 
-Correctness qualification remains open. The first strengthened soak failed an
+The first strengthened soak failed an
 exact-output assertion: observed output was one UTF-16 code unit longer than
 expected. That run did not preserve a useful mismatch location, so the cause
 cannot be assigned to decoding, PTY behavior or the fixture. The verifier now
 persists the complete actual/expected output and first mismatch location before
 failing. Subsequent two-minute / 3,593-cycle and five-minute / 9,498-cycle runs
 passed with native bridge/ring retention checked on every cycle, threads 7 → 7,
-and zero native workers remaining. **Non-reproduction does not resolve the
-initial failure; it remains a default/release blocker.**
+and zero native workers remaining. Those passes alone did not resolve the
+failure; the later raw-byte/control diagnosis above explains the reproduced
+failure class and corrects the exact-byte fixture. Full release qualification
+still requires the remaining OS, package, real-team and long-soak gates.
 
 The soak also records RSS/heap/external samples every two seconds. RSS fell from
 757.6 to 272.0 MiB and from 743.6 to 258.1 MiB in the successful runs, after

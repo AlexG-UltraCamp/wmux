@@ -142,14 +142,25 @@ fn tty_name(fd: RawFd) -> Option<PathBuf> {
 /// also need to make an effort to clean up the mess.
 ///
 /// This function enumerates the open filedescriptors in the current process
-/// and then will forcibly call close(2) on each open fd that is numbered
-/// 3 or higher, effectively closing all descriptors except for the stdio
-/// streams.
+/// and marks descriptors numbered 3 or higher close-on-exec. Do not close them
+/// in pre_exec: Rust's Command still owns its exec-error pipe, and Electron's
+/// inherited Chromium FD ownership checks reject closing its descriptors.
+/// Successful exec closes the descriptors; a failed exec can still report its
+/// error to the parent through the CLOEXEC error pipe.
 ///
 /// The implementation of this function relies on `/dev/fd` being available
 /// to provide the list of open fds.  Any errors in enumerating or closing
 /// the fds are silently ignored.
 pub fn close_random_fds() {
+    #[cfg(target_os = "linux")]
+    unsafe {
+        // Linux >= 5.11: mark the entire range without allocating after fork,
+        // enumerating /proc, or invoking Chromium's interposed close symbol.
+        const CLOSE_RANGE_CLOEXEC: libc::c_uint = 1 << 2;
+        if libc::syscall(libc::SYS_close_range, 3u32, u32::MAX, CLOSE_RANGE_CLOEXEC) == 0 {
+            return;
+        }
+    }
     // FreeBSD, macOS and presumably other BSDish systems have /dev/fd as
     // a directory listing the current fd numbers for the process.
     //
@@ -170,7 +181,10 @@ pub fn close_random_fds() {
         }
         for fd in fds {
             unsafe {
-                libc::close(fd);
+                let flags = libc::fcntl(fd, libc::F_GETFD);
+                if flags >= 0 {
+                    libc::fcntl(fd, libc::F_SETFD, flags | libc::FD_CLOEXEC);
+                }
             }
         }
     }

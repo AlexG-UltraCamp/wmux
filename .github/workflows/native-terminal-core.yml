@@ -1,7 +1,7 @@
 name: Native terminal core
 on:
   pull_request:
-    paths: ['core/wmux-term/**', 'src/daemon/**', 'src/shared/**', 'src/main/pty/**', 'src/main/ipc/handlers/*terminalCore*', 'src/renderer/components/Settings/**', 'bench/native-core-verify.ts', 'bench/fixtures/native-pty-child.cjs', 'scripts/*native*', 'forge.config.ts', 'package.json', 'package-lock.json', '.github/workflows/native-terminal-core.yml']
+    paths: ['core/wmux-term/**', 'src/daemon/**', 'src/shared/**', 'src/main/pty/**', 'src/main/ipc/handlers/*terminalCore*', 'src/renderer/components/Settings/**', 'bench/native-core-verify.ts', 'bench/fixtures/**', 'scripts/*native*', 'scripts/*rust*', 'scripts/__tests__/generateRustUnicode11.test.mjs', 'forge.config.ts', 'package.json', 'package-lock.json', '.github/workflows/native-terminal-core.yml']
   workflow_dispatch:
     inputs:
       soak:
@@ -24,6 +24,8 @@ jobs:
           cache: npm
       - run: npm install -g npm@11
       - run: npm ci
+      - name: Generated Unicode table across checkout line endings
+        run: npx vitest run scripts/__tests__/generateRustUnicode11.test.mjs
       - name: Install Rust toolchain
         run: rustup toolchain install stable --profile minimal
       - run: npm run test:terminal-core -- --report=native-terminal-report.json

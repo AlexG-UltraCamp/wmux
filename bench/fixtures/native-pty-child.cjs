@@ -1,13 +1,20 @@
 // Run inside an actual PTY, not with mocked native bindings.
 const mode = process.argv[2];
-if (mode === 'output') {
+if (mode === 'output' || mode === 'output-raw') {
+  // Exact-byte tests must not rely on OS newline expansion. Darwin can emit
+  // a duplicate CR when ONLCR fills its output queue between the CR and LF.
+  // Set this only in the synthetic child; production PTY defaults are intact.
+  if (mode === 'output-raw' && process.platform !== 'win32') {
+    require('node:child_process').execFileSync('/bin/stty', ['-opost'], { stdio: ['inherit', 'ignore', 'inherit'] });
+  }
+  const newline = mode === 'output-raw' ? '\r\n' : '\n';
   const count = Number(process.argv[3]);
   const write = index => {
     while (index < count) {
-      const line = `ROW${String(index++).padStart(6, '0')}|한글🙂|${'x'.repeat(30)}\n`;
+      const line = `ROW${String(index++).padStart(6, '0')}|한글🙂|${'x'.repeat(30)}${newline}`;
       if (!process.stdout.write(line)) { process.stdout.once('drain', () => write(index)); return; }
     }
-    process.stdout.write('FINAL-OUTPUT\n', () => { process.exitCode = 7; });
+    process.stdout.write(`FINAL-OUTPUT${newline}`, () => { process.exitCode = 7; });
   };
   write(0);
 } else if (mode === 'input') {

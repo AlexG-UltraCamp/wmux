@@ -161,7 +161,11 @@ async function main() {
   }
   assert.equal(survived, false, 'Owned descendant survived root exit');
   checks.push('PTY: child observes resize; owned descendant is gone after root exit');
-  const outputSession = session('output', ['10000']);
+  const cooked = await session('output', ['3']).done;
+  assert.equal(cooked.exitCode, 7);
+  assert.match(cooked.output, /FINAL-OUTPUT/);
+  if (process.platform !== 'win32') assert.match(cooked.output, /\r\nFINAL-OUTPUT\r\n$/);
+  const outputSession = session('output-raw', ['10000']);
   outputSession.pty.pause();
   await new Promise(resolve => setTimeout(resolve, 100));
   outputSession.pty.resume();
@@ -195,6 +199,21 @@ async function main() {
   if (process.platform !== 'win32') { assert.equal(killed.signal, 9); assert.equal(killed.exitCode, 0); }
   checks.push('PTY: bounded input queue, explicit backpressure and blocked-writer termination');
   assert.throws(() => spawnTerminalPty(path.join(os.tmpdir(), 'wmux-no-such-command'), [], {}, () => { throw new Error('Must not retry spawn'); }));
+  if (process.platform !== 'win32') {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'wmux-exec-error-'));
+    try {
+      const script = path.join(dir, 'broken-interpreter');
+      fs.writeFileSync(script, '#!/wmux-no-such-interpreter\n', { mode: 0o700 });
+      let fallbackCalled = false;
+      // An existing executable reaches exec itself. Closing Command's error
+      // pipe in pre_exec incorrectly makes this failure look like a spawn.
+      assert.throws(() => spawnTerminalPty(script, [], {}, () => {
+        fallbackCalled = true; throw new Error('Must not retry an exec failure');
+      }));
+      assert.equal(fallbackCalled, false);
+      checks.push('PTY: exec failure propagates without closing the spawn-error pipe or replaying the command');
+    } finally { fs.rmSync(dir, { recursive: true, force: true }); }
+  }
   for (const count of [1, 6, 32]) {
     const sessions = Array.from({ length: count }, () => session('idle', [], (text, pty) => { if (text.includes('READY')) { pty.resize(120, 40); pty.kill(); } }));
     await Promise.all(sessions.map(s => s.done));
@@ -214,7 +233,7 @@ async function main() {
     };
     sample();
     while (Date.now() < until) {
-      const cycle = session('output', ['1000']);
+      const cycle = session('output-raw', ['1000']);
       const ring = new RingBuffer(1024 * 1024, 'rust'), bridge = new DaemonPTYBridge();
       bridge.setupDataForwarding(cycle.pty, ring, 'native-soak');
       try {
