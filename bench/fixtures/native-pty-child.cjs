@@ -19,7 +19,6 @@ if (mode === 'output' || mode === 'output-raw') {
   write(0);
 } else if (mode === 'input') {
   process.stdin.setRawMode(true);
-  process.stdout.write('READY\n');
   let received = 0;
   const expected = Number(process.argv[3]);
   const hash = require('node:crypto').createHash('sha256');
@@ -33,6 +32,10 @@ if (mode === 'output' || mode === 'output-raw') {
       process.stdout.write(`DIGEST:${hash.digest('hex')}\n`, () => process.exit(0));
     }
   });
+  // Let the stream's resume/read-start run before inviting a bulk write. On
+  // Windows stdout is synchronous; advertising READY before installing the
+  // reader lets the parent flood ConPTY while the child is still in that write.
+  setImmediate(() => process.stdout.write('READY\n'));
 } else if (mode === 'blocked-input') {
   process.stdin.setRawMode(true);
   process.stdout.write('READY\n');
