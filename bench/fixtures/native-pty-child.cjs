@@ -21,10 +21,15 @@ if (mode === 'output' || mode === 'output-raw') {
   process.stdin.setRawMode(true);
   process.stdout.write('READY\n');
   let received = 0;
+  const expected = Number(process.argv[3]);
   const hash = require('node:crypto').createHash('sha256');
+  if (process.platform === 'win32') {
+    setInterval(() => process.stdout.write(`INPUT-PROGRESS:${received}/${expected}\n`), 5000).unref();
+  }
   process.stdin.on('data', data => {
     received += data.length; hash.update(data);
-    if (received === Number(process.argv[3])) {
+    if (received > expected) throw new Error(`Unexpected input length: ${received} > ${expected}`);
+    if (received === expected) {
       process.stdout.write(`DIGEST:${hash.digest('hex')}\n`, () => process.exit(0));
     }
   });

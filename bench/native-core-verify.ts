@@ -52,7 +52,14 @@ function session(mode: string, args: string[] = [], onData?: (text: string, pty:
   assert.equal(ptyBackend(pty), 'rust');
   let output = '', exits = 0;
   const done = new Promise<{ output: string; exitCode: number; signal?: number }>((resolve, reject) => {
-    const timer = setTimeout(() => { pty.dispose?.(); reject(new Error(`PTY timeout: ${mode}; ${output.slice(-200)}`)); }, 30000);
+    // Console input is processed as key events on Windows. Keep the full 4 MiB
+    // integrity check, with a longer deadline and byte-count diagnostics.
+    const timeoutMs = process.platform === 'win32' && mode === 'input' ? 120000 : 30000;
+    const timer = setTimeout(() => {
+      const pending = pty.pendingInputBytes;
+      pty.dispose?.();
+      reject(new Error(`PTY timeout: ${mode}; pendingInputBytes=${pending}; ${output.slice(-500)}`));
+    }, timeoutMs);
     pty.onData(text => { output += text; try { onData?.(text, pty); } catch (e) { clearTimeout(timer); pty.dispose?.(); reject(e); } });
     pty.onExit(event => { exits++; clearTimeout(timer); resolve({ output, ...event }); });
   });
