@@ -22,7 +22,12 @@ app.whenReady().then(() => {
       finally { transport.close(); ring.dispose(); clearTimeout(timer); console.log(JSON.stringify({ electron: process.versions.electron, ok: !process.exitCode })); app.exit(process.exitCode ?? 0); }
     }
   };
-  transport = new NativeTransport(process.execPath, ['-e', 'console.log("native-electron")'], process.cwd(),
+  // The Windows Electron executable is a GUI-subsystem process and is not a
+  // console-output oracle under ConPTY. Keep the host in Electron, but spawn a
+  // real console child there, as the product does for cmd/PowerShell sessions.
+  const command = process.platform === 'win32' ? process.env.ComSpec ?? 'cmd.exe' : process.execPath;
+  const args = process.platform === 'win32' ? ['/d', '/s', '/c', 'echo native-electron'] : ['-e', 'console.log("native-electron")'];
+  transport = new NativeTransport(command, args, process.cwd(),
     { ...process.env, ELECTRON_RUN_AS_NODE: '1' }, 80, 24, () => setImmediate(pump), process.platform === 'win32'
       ? path.resolve('node_modules/node-pty/prebuilds/win32-x64/conpty/conpty.dll') : undefined);
 }).catch(e => { console.error(e); clearTimeout(timer); transport?.close(); app.exit(1); });
