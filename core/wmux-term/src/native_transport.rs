@@ -191,13 +191,25 @@ impl NativeTransport {
                 let _worker = Worker::enter();
                 let mut bytes = [0; 16 * 1024];
                 loop {
+                    #[cfg(unix)]
                     if reader_state.closed.load(Ordering::Acquire) {
                         break;
                     }
                     match reader.read(&mut bytes) {
                         Ok(0) => break,
                         Ok(n) => {
+                            // Older ConPTY versions block ClosePseudoConsole
+                            // until their output is drained. After disposal,
+                            // discard bytes until EOF instead of abandoning
+                            // the pipe while the close worker is using it.
+                            #[cfg(windows)]
+                            if reader_state.closed.load(Ordering::Acquire) {
+                                continue;
+                            }
                             if tx.send(bytes[..n].to_vec()).is_err() {
+                                #[cfg(windows)]
+                                continue;
+                                #[cfg(unix)]
                                 break;
                             }
                             let _ = reader_wake.call((), ThreadsafeFunctionCallMode::NonBlocking);

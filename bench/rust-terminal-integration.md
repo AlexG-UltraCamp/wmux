@@ -46,6 +46,17 @@ available. A broken-interpreter regression checks that an actual exec failure
 reaches the caller without replaying the command. Hosted reruns are required
 before treating Windows/Linux as qualified.
 
+The Windows resize fixture now starts raw console input before announcing READY,
+as required for Node's resize notifications, and exercises bundled and inbox
+ConPTY. Input integrity still checks the full 4 MiB payload; Windows records
+received-byte progress and permits two minutes for console key-event processing.
+
+Disposal must also keep draining discarded Windows output until EOF. Stopping
+the reader before `ClosePseudoConsole` returns can deadlock older ConPTY versions;
+see [Microsoft's close contract](https://learn.microsoft.com/en-us/windows/console/closepseudoconsole).
+The native verifier fills the output queue while paused, disposes without
+resuming, and requires every worker to exit, including both Windows backends.
+
 On macOS arm64 / Node 24.15.0, the combined Rust PTY/ring/text backend reduced
 peak daemon RSS and text-read latency in this synthetic snapshot workload.
 Each cell below is a median across three fresh daemons; backend order alternated.

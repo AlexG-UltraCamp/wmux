@@ -108,6 +108,35 @@ async function verifyNativeBridge(): Promise<void> {
   } finally { live.pty.dispose?.(); bridge.cleanup(); ring.dispose(); }
 }
 
+async function verifyPausedDisposal(): Promise<void> {
+  const native = loadNativeTerminalCore('pty-v1');
+  for (const bundled of process.platform === 'win32' ? [true, false] : [false]) {
+    const pty = spawnTerminalPty(process.execPath, [fixture, 'output-raw', '1000000'], {
+      cols: 80, rows: 24, cwd: process.cwd(), env: process.env, useConptyDll: bundled,
+    }, () => { throw new Error('Unexpected node-pty fallback'); }) as TerminalPty;
+    try {
+      await new Promise<void>((resolve, reject) => {
+        const timer = setTimeout(() => reject(new Error('Paused-disposal fixture did not start output')), 30000);
+        let tail = '';
+        const listener = pty.onData(text => {
+          tail = (tail + text).slice(-4096);
+          if (!tail.includes('ROW')) return;
+          clearTimeout(timer); listener.dispose(); pty.pause(); resolve();
+        });
+        pty.onExit(() => { clearTimeout(timer); reject(new Error('Output producer exited before disposal')); });
+      });
+      // Let the bounded output queue fill, then cancel without resuming it.
+      await new Promise(resolve => setTimeout(resolve, 500));
+      pty.dispose?.();
+      for (let retry = 0; retry < 500 && native.nativeTransportWorkerCount() !== 0; retry++) {
+        await new Promise(resolve => setTimeout(resolve, 20));
+      }
+      assert.equal(native.nativeTransportWorkerCount(), 0, `Paused disposal leaked a worker (bundled=${bundled})`);
+    } finally { pty.dispose?.(); }
+  }
+  checks.push('PTY: disposal with paused bulk output reclaims every worker');
+}
+
 async function main() {
   process.env.WMUX_TERMINAL_CORE = 'rust';
   verifyRing();
@@ -188,6 +217,7 @@ async function main() {
   await new Promise(resolve => setTimeout(resolve, 20));
   assert.equal(outputSession.exits, 1);
   checks.push('PTY: paused bulk output, UTF-8, final output before one exit');
+  await verifyPausedDisposal();
   const input = Buffer.alloc(4 * 1024 * 1024, 'x');
   let sent = false;
   const received = await session('input', [String(input.length)], (text, pty) => {
