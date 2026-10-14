@@ -29,6 +29,19 @@
 //              hops (no parent), which the owner's message bounds — and a
 //              send past MAX_PER_RUN within one turn of a bot.
 //
+// relay      a coordinator's dispatch may name the bots that follow its
+//            addressee (`next`). Each bot's result is stored and shown in the
+//            thread without waking the coordinator, and wmux sends the work
+//            on to the next bot: a dispatch in the coordinator's name that
+//            carries the result (same depth, `forward:<resultId>` key,
+//            marked `relay`, its taint mark written before it is stored).
+//            The coordinator is woken once, with the last result, or with
+//            the result the relay could not pass on (a bot no longer
+//            enabled, a limit, a wake not taken). A parentless dispatch a
+//            coordinator sends from `general` opens a thread of its own;
+//            once its last result is in, General gets one card pointing
+//            at that thread, replying to the owner's message.
+//
 // A result (or refusal) answers its replyTo at most once: a second one is
 // refused `duplicate_result`. A send or question carrying a clientHandoffId
 // the sender already used (default `wake:<wakeId>:h<n>` from its running
@@ -81,7 +94,8 @@ import {
   type HandoffStatus,
   type Party,
 } from '../../shared/handoff';
-import { ROOM_LIMITS, parseThreadId, type RoomCard, type ThreadId } from '../../shared/room';
+import { GENERAL_THREAD, ROOM_LIMITS, parseThreadId, type RoomCard, type ThreadId } from '../../shared/room';
+import { humanCardIdOfRun } from './humanMessage';
 import {
   DECISION_LIMITS,
   clearThreadDecision,
@@ -131,6 +145,10 @@ export const HANDOFF_STORE_LIMITS = {
   LIST_MAX: 200,
 } as const;
 
+/** How long a stopped relay's wake for its coordinator is enqueued again on
+ *  each start (the wake queue keeps a keyed wake's record as long). */
+const RELAY_STOP_RETRY_MS = 7 * 24 * 3600_000;
+
 /** The answer text of a question the owner closed without choosing. */
 export const DISMISSED_ANSWER = 'The owner closed this question without choosing an answer.';
 
@@ -158,6 +176,8 @@ export type HandoffResult =
       queuedBehind?: string;
       /** handoff.answer: the answer handoff sent to the bot that asked. */
       answerHandoffId?: string;
+      /** A relay's result: the bot wmux sent the work on to. */
+      relayedTo?: HandoffAddressee;
       /** The clientHandoffId was used before: this is that handoff. */
       duplicate?: true;
     }
@@ -183,6 +203,19 @@ export interface HandoffWakeSummary {
   fromWorkspaceId?: string;
   /** It already has its result. */
   answered?: true;
+  /** A dispatch wmux sent on for a coordinator's relay: whose relay, and
+   *  the bots that follow (labels). */
+  relay?: { lead: string; next: string[] };
+  /** A relay's result the relay could not pass on, and why. */
+  relayStopped?: string;
+  /** A relay's last result: the hops before it, oldest first. */
+  trail?: string[];
+}
+
+/** What the router asks of the taint tracker (wakeTaint.ts). */
+export interface HandoffTaintPort {
+  markSent(handoffId: string, senderBotId: string, answers?: readonly string[]): void;
+  markForward(handoffId: string, from: { senderBotId?: string; handoffIds: readonly string[] }): boolean;
 }
 
 // ── Decision store port (the real store, bound to one data dir) ────────────
@@ -282,9 +315,33 @@ export function parseHandoff(raw: unknown): Handoff | null {
     ...(h.intro === true && h.kind === 'ask_person' ? { intro: true as const } : {}),
     ...(h.kind === 'ask_person' && typeof h.ownerCardId === 'string' && ID_RE.test(h.ownerCardId) ? { ownerCardId: h.ownerCardId } : {}),
     ...(h.kind === 'ask_person' && typeof h.forHop === 'string' && ID_RE.test(h.forHop) ? { forHop: h.forHop } : {}),
+    ...(h.kind === 'dispatch' ? relayNext(h.next) : {}),
+    ...(h.kind === 'dispatch' && h.relay === true ? { relay: true as const } : {}),
+    ...(typeof h.relayStopped === 'string' && oneLine(h.relayStopped, 300) ? { relayStopped: oneLine(h.relayStopped, 300) } : {}),
+    ...(h.relayStopTold === true ? { relayStopTold: true as const } : {}),
+    ...(h.kind === 'dispatch' && h.opensThread === true ? { opensThread: true as const } : {}),
+    ...((h.kind === 'result' || h.kind === 'refusal') && h.pointed === true ? { pointed: true as const } : {}),
     createdAt: h.createdAt,
     updatedAt: h.updatedAt,
   };
+}
+
+/** A stored `next`: distinct bot ids, at most MAX_RELAY, or nothing. */
+function relayNext(raw: unknown): { next?: string[] } {
+  if (!Array.isArray(raw)) return {};
+  const next = [...new Set(raw.filter((id): id is string => typeof id === 'string' && BOT_ID_RE.test(id)))].slice(0, HANDOFF_LIMITS.MAX_RELAY);
+  return next.length > 0 ? { next } : {};
+}
+
+/** The idempotency key of the dispatch wmux sends on for a relay's result. */
+export function forwardKey(resultId: string): string {
+  return `forward:${resultId}`;
+}
+
+/** A hop that is part of a relay: a dispatch that names bots to follow, or
+ *  one wmux sent on. */
+function isRelayHop(h: Handoff): boolean {
+  return h.relay === true || (h.next?.length ?? 0) > 0;
 }
 
 function newId(prefix: string): string {
@@ -306,6 +363,7 @@ interface RouteSpec {
   toWorkspaceId?: string;
   toBotId?: string;
   clientHandoffId?: string;
+  next?: string[];
 }
 
 /** The idempotency key of the message a card's mention sends one bot. */
@@ -332,6 +390,9 @@ export interface HandoffRouterOptions {
   /** fact log, wake queue, bot directory (resolved on use). */
   ports: () => Partial<Pick<FactoryRoomPorts, 'factLog' | 'wakes' | 'bots' | 'currentWakeThread' | 'currentWake'>>;
   rooms: () => RoomWriter | null;
+  /** The taint tracker (wakeTaint.ts), when it runs: sends are marked as
+   *  they are made, and a relay's dispatch before it is stored. */
+  taint?: () => HandoffTaintPort | null;
   now?: () => number;
   log?: (msg: string, err?: unknown) => void;
 }
@@ -360,6 +421,7 @@ export class HandoffRouter {
   async start(): Promise<void> {
     this.load();
     this.redeliverQueued();
+    this.resumeRelays();
     this.offDecisions ??= this.opts.decisions.onChanged(() => {
       // The store notifies inside its write: settle on our own chain.
       void this.reconcile();
@@ -458,8 +520,69 @@ export class HandoffRouter {
     for (const h of [...this.records.values()]) {
       if (h.status !== 'queued' || h.kind === 'ask_person' || h.to.kind !== 'bot') continue;
       const bot = safeGet(this.opts.ports().bots, h.to.botId);
-      if (!bot || !bot.enabled) this.refuse(h, 'no_addressee', `bot ${h.to.botId} is not enabled`);
-      else this.deliver(h, bot);
+      if (!bot || !bot.enabled) {
+        this.refuse(h, 'no_addressee', `bot ${h.to.botId} is not enabled`);
+        this.relayStoppedAt(h, `${this.partyLabel(h.to)} is not enabled`);
+      } else {
+        const r = this.deliver(h, bot);
+        if (!r.ok) this.relayStoppedAt(h, `${this.partyLabel(h.to)} did not take the work`);
+      }
+    }
+  }
+
+  /** Relays a stop cut short: a delivered result whose hop names the bots
+   *  that follow, with no dispatch sent on for it yet, is sent on now (or
+   *  brought to the coordinator); a delivered last result of a coordinator's
+   *  thread with no card in General gets it. */
+  private resumeRelays(): void {
+    const recent = this.now() - RELAY_STOP_RETRY_MS;
+    for (const r of [...this.records.values()]) {
+      if ((r.kind !== 'result' && r.kind !== 'refusal') || !r.replyTo) continue;
+      const parent = this.records.get(r.replyTo);
+      if (!parent) continue;
+      const taken = r.status === 'delivered' || r.status === 'queued';
+      // A refusal taken by the coordinator ended its work: pointed to as stopped.
+      if (r.kind === 'refusal') {
+        if (taken) this.pointToThread(r.id, parent, 'stopped');
+        continue;
+      }
+      if (!isRelayHop(parent) && !taken) continue;
+      const lead = parent.from.kind === 'bot' ? safeGet(this.opts.ports().bots, parent.from.botId) : null;
+      if (r.relayStopped) {
+        // Not told yet (its wake not taken, or not on disk): ask again.
+        if (lead && !r.relayStopTold && r.updatedAt >= recent) this.wakeForStop(r.id, lead);
+        this.pointToThread(r.id, parent, 'stopped');
+        continue;
+      }
+      if (r.status === 'refused') {
+        // A relay's hop refused past a limit or by the coordinator's queue.
+        const code = r.refusal?.code;
+        if (lead && r.to.kind === 'bot' && r.to.botId === lead.id && (code === 'max_depth' || code === 'max_per_run' || code === 'budget')) {
+          this.stopRelay(r.id, lead, `its last result was refused (${code})`);
+        }
+        continue;
+      }
+      // A last result taken but not yet marked delivered (redelivered at this
+      // start) is pointed to as well.
+      if (r.status === 'queued' && (parent.next?.length ?? 0) === 0) {
+        this.pointToThread(r.id, parent, 'finished');
+        continue;
+      }
+      if (r.status !== 'delivered') continue;
+      if ((parent.next?.length ?? 0) > 0) {
+        if (parent.from.kind !== 'bot') continue;
+        const sent = this.byClientId(parent.from.botId, forwardKey(r.id));
+        // A forward refused before its stop was recorded: record it now.
+        if (sent) {
+          if (sent.status === 'refused' && lead) this.stopRelay(r.id, lead, `${this.partyLabel(sent.to)} did not take the work`);
+          continue;
+        }
+        // A restart: no turn of the bot that sent the result is running, so
+        // the dispatch takes the result's own mark.
+        this.forward(r, parent, null);
+      } else {
+        this.pointToThread(r.id, parent, 'finished');
+      }
     }
   }
 
@@ -497,7 +620,29 @@ export class HandoffRouter {
       ...(h.kind === 'answer' && h.from.kind === 'human' && h.payload.body === DISMISSED_ANSWER ? { dismissed: true as const } : {}),
       ...(h.from.kind === 'bot' ? { fromWorkspaceId: h.from.workspaceId } : {}),
       ...(this.answered(h.id) ? { answered: true as const } : {}),
+      ...(h.relay && h.from.kind === 'bot' ? { relay: { lead: this.partyLabel(h.from), next: (h.next ?? []).map((id) => this.botLabel(id)) } } : {}),
+      ...(h.relayStopped ? { relayStopped: h.relayStopped } : {}),
+      ...(this.relayTrail(h)),
     };
+  }
+
+  /** A relay's last result (or one it stopped at): the hops before it in
+   *  its chain, oldest first (at most 10). */
+  private relayTrail(h: Handoff): { trail?: string[] } {
+    if (h.kind !== 'result' || !h.replyTo) return {};
+    const parent = this.records.get(h.replyTo);
+    if (!parent || !(parent.relay === true || h.relayStopped)) return {};
+    const trail = h.attribution.chain
+      .map((id) => this.records.get(id))
+      .filter((x): x is Handoff => !!x && (x.kind === 'dispatch' || x.kind === 'result'))
+      .slice(-10)
+      .map((x) => `${this.partyLabel(x.from)} → ${this.partyLabel(x.to)}: ${x.relay ? 'dispatch (sent on by wmux)' : x.kind} "${x.payload.title}"`);
+    return trail.length > 0 ? { trail } : {};
+  }
+
+  private botLabel(botId: string): string {
+    const bot = safeGet(this.opts.ports().bots, botId);
+    return bot ? `${bot.name || bot.role} (${botId})` : botId;
   }
 
   // ── send (dispatch / result / refusal / message) ──
@@ -518,8 +663,18 @@ export class HandoffRouter {
     if (kind === 'message' && params.toBotId === undefined) return invalid('a message needs toBotId');
     if (params.toBotId !== undefined && kind !== 'message' && kind !== 'dispatch') return invalid('toBotId is for a dispatch or a message');
     if (params.replyTo !== undefined && (typeof params.replyTo !== 'string' || !ID_RE.test(params.replyTo))) return invalid('replyTo is not a handoff id');
-    if (params.clientHandoffId !== undefined && (!isClientId(params.clientHandoffId) || params.clientHandoffId.startsWith('mention:'))) {
+    if (params.clientHandoffId !== undefined && (!isClientId(params.clientHandoffId) || params.clientHandoffId.startsWith('mention:') || params.clientHandoffId.startsWith('forward:'))) {
       return invalid('clientHandoffId is not a valid key');
+    }
+    let next: string[] | undefined;
+    if (params.next !== undefined) {
+      if (kind !== 'dispatch') return invalid('next is for a dispatch');
+      if (!Array.isArray(params.next) || params.next.length === 0 || params.next.length > HANDOFF_LIMITS.MAX_RELAY
+        || !params.next.every((id) => typeof id === 'string' && BOT_ID_RE.test(id))) {
+        return invalid(`next is 1 to ${HANDOFF_LIMITS.MAX_RELAY} bot ids`);
+      }
+      if (new Set(params.next).size !== params.next.length) return invalid('next names a bot twice');
+      next = [...params.next];
     }
     const wake = runningWake(this.opts.ports(), sender.botId);
     return this.route(sender, {
@@ -531,6 +686,7 @@ export class HandoffRouter {
       ...(params.replyTo !== undefined ? { replyTo: params.replyTo } : {}),
       ...(params.toWorkspaceId !== undefined ? { toWorkspaceId: params.toWorkspaceId } : {}),
       ...(params.toBotId !== undefined ? { toBotId: params.toBotId } : {}),
+      ...(next ? { next } : {}),
       clientHandoffId: params.clientHandoffId ?? wakeOrdinals.next(wake, 'handoff'),
     });
   }
@@ -584,8 +740,9 @@ export class HandoffRouter {
     const ownerRun = !chainParent && wake?.runId && ID_RE.test(wake.runId) ? wake.runId : null;
     const from = botParty(sender);
     const id = newId('h');
+    const coordinator = isCoordinatorBot(safeGet(this.opts.ports().bots, sender.botId));
     // A chain a Coordinator starts begins at depth 0, like the owner's.
-    const depth = chainParent ? chainParent.depth + 1 : isCoordinatorBot(safeGet(this.opts.ports().bots, sender.botId)) ? 0 : 1;
+    const depth = chainParent ? chainParent.depth + 1 : coordinator ? 0 : 1;
     const runId = chainParent ? chainParent.runId : ownerRun ?? newId('run');
     const draft: Handoff = {
       version: 1,
@@ -613,6 +770,12 @@ export class HandoffRouter {
       createdAt: this.now(),
       updatedAt: this.now(),
     };
+    // A coordinator's new piece of work said in General gets a thread of its
+    // own: the whole flow (hops, workers, the report) stays together there.
+    if (kind === 'dispatch' && coordinator && !spec.namedThread && !parent && draft.threadId === GENERAL_THREAD) {
+      draft.threadId = `handoff:${id}` as ThreadId;
+      draft.opensThread = true;
+    }
 
     if (!surfaceAllows(sender, 'handoff_send')) return this.refuse(draft, 'surface', 'the bot surface has no handoff_send');
     if (spec.replyTo && !parent) return this.refuse(draft, 'no_addressee', `no handoff ${spec.replyTo} to reply to`);
@@ -627,21 +790,51 @@ export class HandoffRouter {
     if ('refusal' in target) return this.refuse(draft, target.refusal, target.detail);
     draft.to = { kind: 'bot', workspaceId: target.bot.workspaceId, botId: target.bot.id };
 
+    if (spec.next) {
+      if (!coordinator) return this.refuse(draft, 'surface', 'only a coordinator names the bots that follow (next)');
+      const bad = this.relayRefusal(sender, target.bot, spec.next);
+      if (bad) return this.refuse(draft, 'no_addressee', bad);
+      draft.next = [...spec.next];
+    }
+
+    // A relay's hop answered past a limit stops the relay: the coordinator
+    // is told, with that result.
+    const inRelay = (kind === 'result' || kind === 'refusal') && parent && isRelayHop(parent) ? parent : null;
     if (depth > HANDOFF_LIMITS.MAX_DEPTH) {
-      return this.refuse(draft, 'max_depth', `chain depth ${depth} is over ${HANDOFF_LIMITS.MAX_DEPTH}`);
+      const refused = this.refuse(draft, 'max_depth', `chain depth ${depth} is over ${HANDOFF_LIMITS.MAX_DEPTH}`);
+      if (inRelay) this.stopRelay(draft.id, target.bot, `the chain reached its depth limit (${HANDOFF_LIMITS.MAX_DEPTH})`);
+      return refused;
     }
     // The first hops of an owner's run (the bots it woke answering each
     // other) are never refused here; they count for the hops after them.
     if (!ownerRun && draft.hopsInRun > HANDOFF_LIMITS.MAX_PER_RUN) {
-      return this.refuse(draft, 'max_per_run', `hop ${draft.hopsInRun} of run ${runId} is over ${HANDOFF_LIMITS.MAX_PER_RUN}`);
+      const refused = this.refuse(draft, 'max_per_run', `hop ${draft.hopsInRun} of run ${runId} is over ${HANDOFF_LIMITS.MAX_PER_RUN}`);
+      if (inRelay) this.stopRelay(draft.id, target.bot, `the run reached its hop limit (${HANDOFF_LIMITS.MAX_PER_RUN})`);
+      return refused;
     }
     // One turn starts at most MAX_PER_RUN handoffs, parentless ones included.
     const turnKey = wake ? `${wake.wakeId}#${wake.attempt}` : null;
     const inTurn = turnKey ? this.sentInTurn.get(turnKey) ?? 0 : 0;
     if (turnKey && inTurn >= HANDOFF_LIMITS.MAX_PER_RUN) {
-      return this.refuse(draft, 'max_per_run', `one turn sends at most ${HANDOFF_LIMITS.MAX_PER_RUN} handoffs`);
+      const refused = this.refuse(draft, 'max_per_run', `one turn sends at most ${HANDOFF_LIMITS.MAX_PER_RUN} handoffs`);
+      if (inRelay) this.stopRelay(draft.id, target.bot, `its turn reached the handoff limit (${HANDOFF_LIMITS.MAX_PER_RUN})`);
+      return refused;
     }
-    const result = this.deliver(draft, target.bot);
+    // Marked now, in the sender's turn, from the wake it is running; a reply
+    // is also as tainted as the handoff it answers.
+    this.opts.taint?.()?.markSent(draft.id, sender.botId, parent ? [parent.id] : []);
+    // A result on a relay's hop that names bots to follow goes on to them;
+    // any other is delivered (and, when it ends a coordinator's thread,
+    // pointed to from General).
+    const result = kind === 'result' && parent && (parent.next?.length ?? 0) > 0
+      ? this.relayOn(draft, parent, target.bot)
+      : this.deliver(draft, target.bot);
+    if (result.ok && kind === 'result' && parent) this.pointToThread(draft.id, parent, 'finished');
+    // A refusal the coordinator took ended its work there.
+    if (result.ok && kind === 'refusal' && parent) this.pointToThread(draft.id, parent, 'stopped');
+    // The coordinator's queue did not take a relay's last result: it is
+    // brought to it as a stopped relay (retried on the next start).
+    if (!result.ok && inRelay && result.code === 'budget') this.stopRelay(draft.id, target.bot, 'your queue did not take its last result');
     if (turnKey && result.ok) {
       this.sentInTurn.delete(turnKey);
       this.sentInTurn.set(turnKey, inTurn + 1);
@@ -651,6 +844,217 @@ export class HandoffRouter {
       }
     }
     return result;
+  }
+
+  // ── relays ──
+
+  /** Why a coordinator's `next` cannot stand, or null: every bot named must
+   *  be an enabled bot of its workspace, neither it nor the addressee (who
+   *  must be in that workspace too). */
+  private relayRefusal(sender: BotBinding, to: BotProfile, next: readonly string[]): string | null {
+    if (to.workspaceId !== sender.workspaceId) return 'a relay stays in your workspace: its first bot is in another one';
+    for (const id of next) {
+      if (id === sender.botId) return 'next names you; you get the last result anyway';
+      if (id === to.id) return `next names the addressee ${id}`;
+      const bot = safeGet(this.opts.ports().bots, id);
+      if (!bot || !bot.enabled) return `bot ${id} in next is not enabled`;
+      if (bot.workspaceId !== sender.workspaceId) return `bot ${id} in next is not in your workspace`;
+    }
+    return null;
+  }
+
+  /** The dispatch a relay started from: walk back through the dispatches
+   *  wmux sent on (each answers a result, which answers the hop before). */
+  private rootOf(hop: Handoff): Handoff {
+    let h = hop;
+    for (let i = 0; i <= HANDOFF_LIMITS.MAX_RELAY && h.relay === true; i++) {
+      const result = h.replyTo ? this.records.get(h.replyTo) : undefined;
+      const before = result?.replyTo ? this.records.get(result.replyTo) : undefined;
+      if (!before) break;
+      h = before;
+    }
+    return h;
+  }
+
+  /** A result on a relay's hop that names bots to follow: stored and shown
+   *  (the coordinator is not woken for it), then sent on to the next bot. */
+  private relayOn(result: Handoff, parent: Handoff, lead: BotProfile): HandoffResult {
+    const stored: Handoff = { ...result, status: 'delivered' };
+    if (!this.put(stored)) return { ok: false, code: 'write_failed', message: 'the handoff could not be stored' };
+    this.emit('handoff.received', stored);
+    const on = this.forward(stored, parent, result.from.kind === 'bot' ? result.from.botId : null);
+    return {
+      ok: true,
+      handoffId: stored.id,
+      status: 'delivered',
+      threadId: stored.threadId,
+      to: { botId: lead.id, role: lead.role, workspaceId: lead.workspaceId },
+      ...(on ? { relayedTo: on } : {}),
+    };
+  }
+
+  /**
+   * Send a relay's result on to the next bot: a dispatch in the
+   * coordinator's name, at the result's depth, keyed `forward:<resultId>`.
+   * Its taint mark is written first: from the sending bot's running wake
+   * when it is sent in that bot's turn (`senderBotId`), else from the
+   * result's own mark, and from the hop and the relay's first dispatch
+   * either way. When it cannot go on, the coordinator gets the result with
+   * the reason. Returns the bot it went to, or null.
+   */
+  private forward(result: Handoff, parent: Handoff, senderBotId: string | null): HandoffAddressee | null {
+    if (parent.from.kind !== 'bot') return null;
+    const bots = this.opts.ports().bots;
+    const lead = safeGet(bots, parent.from.botId);
+    const key = forwardKey(result.id);
+    if (this.byClientId(parent.from.botId, key)) return null;
+    if (!lead) {
+      this.log(`relay of ${parent.id}: its coordinator ${parent.from.botId} is gone; result ${result.id} goes no further`);
+      return null;
+    }
+    const [nextId, ...rest] = parent.next ?? [];
+    if (!nextId) return null;
+    const next = safeGet(bots, nextId);
+    if (!next || !next.enabled || next.workspaceId !== lead.workspaceId) {
+      this.stopRelay(result.id, lead, `${this.botLabel(nextId)} is not an enabled bot of this workspace`);
+      return null;
+    }
+    const root = this.rootOf(parent);
+    const id = newId('h');
+    const half = Math.floor(HANDOFF_STORE_LIMITS.BODY_MAX / 2);
+    const body = [
+      `Brief from ${this.partyLabel(parent.from)}: ${root.payload.title}`,
+      capBody(root.payload.body, half),
+      `Result from ${this.partyLabel(result.from)}: ${result.payload.title}`,
+      capBody(result.payload.body, half),
+    ].filter((x) => x.trim().length > 0).join('\n\n');
+    const f: Handoff = {
+      version: 1,
+      id,
+      runId: parent.runId,
+      threadId: parent.threadId,
+      // wmux's hop, like an answer: the result it carries took the depth.
+      depth: result.depth,
+      hopsInRun: Math.max(this.hopsIn(parent.runId), result.hopsInRun) + 1,
+      from: parent.from,
+      to: { kind: 'bot', workspaceId: next.workspaceId, botId: next.id },
+      kind: 'dispatch',
+      replyTo: result.id,
+      attribution: { originator: result.attribution.originator, chain: [...result.attribution.chain, result.id].slice(-HANDOFF_STORE_LIMITS.CHAIN_MAX) },
+      landing: 'wake',
+      payload: {
+        title: root.payload.title,
+        body: capBody(body, HANDOFF_STORE_LIMITS.BODY_MAX),
+        ...(root.payload.refs ? { refs: root.payload.refs } : {}),
+      },
+      status: 'queued',
+      clientHandoffId: key,
+      ...(rest.length > 0 ? { next: rest } : {}),
+      relay: true,
+      createdAt: this.now(),
+      updatedAt: this.now(),
+    };
+    if (f.hopsInRun > HANDOFF_LIMITS.MAX_PER_RUN) {
+      this.stopRelay(result.id, lead, `the run reached its hop limit (${HANDOFF_LIMITS.MAX_PER_RUN})`);
+      return null;
+    }
+    // Before it is stored or announced: its delivery never derives a mark
+    // from the coordinator's own wake.
+    this.opts.taint?.()?.markForward(id, {
+      ...(senderBotId ? { senderBotId } : {}),
+      handoffIds: [result.id, parent.id, root.id],
+    });
+    const sent = this.deliver(f, next);
+    if (!sent.ok) {
+      this.stopRelay(result.id, lead, `${this.partyLabel(f.to)} did not take the work (${sent.message})`);
+      return null;
+    }
+    return { botId: next.id, role: next.role, workspaceId: next.workspaceId };
+  }
+
+  /** The relay cannot go on: the coordinator is woken with the result it
+   *  stopped at (a handoff addressed to it) and the reason. Once per
+   *  result. */
+  private stopRelay(resultId: string, lead: BotProfile, why: string): void {
+    const result = this.records.get(resultId);
+    if (!result || result.relayStopped) return;
+    // The note first, so the wake shows it; the wake is keyed by the result,
+    // so the next start enqueues it again when this one was not taken.
+    if (!this.put({ ...result, relayStopped: oneLine(`relay stopped: ${why}`, 300) })) return;
+    this.wakeForStop(result.id, lead);
+    const parent = result.replyTo ? this.records.get(result.replyTo) : undefined;
+    if (parent) this.pointToThread(result.id, parent, 'stopped');
+  }
+
+  private wakeForStop(resultId: string, lead: BotProfile): void {
+    const result = this.records.get(resultId);
+    if (!result) return;
+    let wakeId: string | undefined;
+    try {
+      wakeId = this.opts.ports().wakes?.enqueue({
+        botId: lead.id, workspaceId: lead.workspaceId, reason: { kind: 'handoff', handoffId: result.id }, priority: 1, threadId: result.threadId,
+      })?.id;
+    } catch (err) {
+      this.log(`relay stop wake for ${result.id} failed`, err);
+    }
+    if (!wakeId) {
+      this.log(`relay stopped at ${result.id}; ${lead.id} did not take the wake (tried again on the next start)`);
+      return;
+    }
+    // Told once the wake is on disk; until then the next start asks again.
+    const told = (): void => {
+      const now = this.records.get(resultId);
+      if (now && !now.relayStopTold) this.put({ ...now, relayStopTold: true });
+    };
+    const wakes = this.opts.ports().wakes;
+    if (wakes?.flush) {
+      const p = wakes.flush().then(told, (err: unknown) => this.log(`relay stop wake for ${resultId} not on disk`, err));
+      this.settling.add(p);
+      void p.finally(() => this.settling.delete(p));
+    } else {
+      told();
+    }
+  }
+
+  /** A dispatch wmux sent on could not be delivered: stop its relay at the
+   *  result it carried. */
+  private relayStoppedAt(f: Handoff, why: string): void {
+    if (!f.relay || f.from.kind !== 'bot' || !f.replyTo) return;
+    const lead = safeGet(this.opts.ports().bots, f.from.botId);
+    if (lead) this.stopRelay(f.replyTo, lead, why);
+  }
+
+  /** The last result of a coordinator's own thread (a dispatch it sent from
+   *  General, relayed or not) is in: one card in General points at that
+   *  thread, replying to the owner's message when the run is one. Written
+   *  once per result. */
+  private pointToThread(resultId: string, parent: Handoff, how: 'finished' | 'stopped'): void {
+    const result = this.records.get(resultId);
+    if (!result || result.pointed) return;
+    if (how === 'finished' && (parent.next?.length ?? 0) > 0) return;
+    const root = this.rootOf(parent);
+    // Only a thread this router opened for a coordinator's work in General.
+    if (root.kind !== 'dispatch' || root.from.kind !== 'bot' || root.opensThread !== true) return;
+    if (!isCoordinatorBot(safeGet(this.opts.ports().bots, root.from.botId))) return;
+    const rooms = this.opts.rooms();
+    const ws = root.from.workspaceId;
+    if (!rooms) return;
+    // A card written before its mark was (a stop between the two): only the
+    // mark is repaired.
+    const written = rooms.find(ws, (c) => c.threadId === GENERAL_THREAD && c.actor.kind === 'system' && c.refs?.handoffId === result.id && c.refs?.threadId === root.threadId);
+    const ownerCardId = humanCardIdOfRun(root.runId);
+    const ownerCard = ownerCardId ? rooms.get(ws, ownerCardId) : null;
+    const card = written ?? rooms.append({
+      workspaceId: ws,
+      threadId: GENERAL_THREAD,
+      kind: 'fact',
+      actor: { kind: 'system' },
+      title: `${how === 'stopped' ? 'Stopped' : 'Finished'}: ${root.payload.title}`,
+      refs: { handoffId: result.id, threadId: root.threadId },
+    }, ownerCard && ownerCard.threadId === GENERAL_THREAD && ownerCard.kind === 'human' ? { replyTo: ownerCard.id } : undefined);
+    // Written once per result: the mark is on the result itself.
+    const now = card ? this.records.get(resultId) : null;
+    if (now) this.put({ ...now, pointed: true });
   }
 
   private addresseeFor(
@@ -789,8 +1193,10 @@ export class HandoffRouter {
     // Wake first, then the status: a stop before the status line leaves the
     // handoff queued, and the next start redelivers it into the same wake.
     const mark = (): void => {
-      if (this.records.get(h.id)?.status !== 'queued') return;
-      const delivered: Handoff = { ...h, status: 'delivered' };
+      // The stored record, not the draft: main may have marked it meanwhile.
+      const cur = this.records.get(h.id);
+      if (cur?.status !== 'queued') return;
+      const delivered: Handoff = { ...cur, status: 'delivered' };
       if (this.put(delivered)) this.emit('handoff.received', delivered);
     };
     if (wakes?.flush) {
@@ -851,6 +1257,8 @@ export class HandoffRouter {
         ...(h.kind === 'answer' ? { answer: h.payload.body.slice(0, HANDOFF_STORE_LIMITS.ANSWER_MAX) } : {}),
         // A room card's mention: the card says it, so its delivery is no line.
         ...(h.clientHandoffId?.startsWith('mention:') ? { mention: true } : {}),
+        // wmux sent it on for a coordinator's relay, in its name.
+        ...(h.relay ? { relay: true } : {}),
       },
     };
     const ports = this.opts.ports();
@@ -886,7 +1294,9 @@ export class HandoffRouter {
       if (!title) return invalid('title is required');
       const namedThread = params.threadId === undefined ? undefined : parseThreadId(params.threadId);
       if (namedThread === null) return invalid('threadId is not a thread id');
-      if (params.clientHandoffId !== undefined && !isClientId(params.clientHandoffId)) return invalid('clientHandoffId is not a valid key');
+      if (params.clientHandoffId !== undefined && (!isClientId(params.clientHandoffId) || params.clientHandoffId.startsWith('mention:') || params.clientHandoffId.startsWith('forward:'))) {
+        return invalid('clientHandoffId is not a valid key');
+      }
       const prior = this.byClientId(sender.botId, clientHandoffId);
       if (prior) return prior.kind === 'ask_person' ? this.resultOf(prior, true) : invalid('clientHandoffId was used for a handoff');
       const from = botParty(sender);
