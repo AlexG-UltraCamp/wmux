@@ -2002,8 +2002,8 @@ document.addEventListener('DOMContentLoaded', () => {
     ipcRenderer.invoke(IPC.REMOTE_WORKSPACES_LIST, hostId) as Promise<
       { ok: true; workspaces: RemoteWorkspaceSummary[] } | { ok: false; error: string; reason?: RemoteErrorReason }
     >,
-  workspaceCreate: (hostId: string, workspaceId: string, cwd?: string) =>
-    ipcRenderer.invoke(IPC.REMOTE_WORKSPACE_CREATE, hostId, workspaceId, cwd) as Promise<
+  workspaceCreate: (hostId: string, workspaceId: string, cwd?: string, name?: string) =>
+    ipcRenderer.invoke(IPC.REMOTE_WORKSPACE_CREATE, hostId, workspaceId, cwd, name) as Promise<
       { ok: true; sessionId: string } | { ok: false; error: string; reason?: RemoteErrorReason }
     >,
   sessionClose: (hostId: string, sessionId: string) =>
@@ -2102,6 +2102,7 @@ export interface PcRailBridge {
   onStream(callback: (e: PcRailStreamEvent) => void): () => void;
   approvalsList(request: PcRailApprovalsRequest): Promise<PcRailApprovalsResult>;
   setMutes(request: PcRailMutesRequest): Promise<void>;
+  refresh(request: { hostId: string }): Promise<boolean>;
 }
 
 function onPcRailPush<T>(channel: string, callback: (payload: T) => void): () => void {
@@ -2125,6 +2126,7 @@ const pcRailBridge: PcRailBridge = {
   onStream: (callback) => onPcRailPush(PC_RAIL_IPC.STREAM_EVENT, callback),
   approvalsList: (request) => ipcRenderer.invoke(PC_RAIL_IPC.APPROVALS_LIST, request) as Promise<PcRailApprovalsResult>,
   setMutes: (request) => ipcRenderer.invoke(PC_RAIL_IPC.MUTES_SET, request) as Promise<void>,
+  refresh: (request) => ipcRenderer.invoke(PC_RAIL_IPC.REFRESH, request) as Promise<boolean>,
 };
 (electronAPI as Record<string, unknown>).pcRail = pcRailBridge;
 
