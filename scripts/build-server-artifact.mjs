@@ -2,12 +2,15 @@
 // CLI + `wmux web`) that "Add PC over SSH" installs under
 // `~/.wmux/runtime/<ver>/` on a Linux host, with no sudo and no system Node.
 //
-//   node scripts/build-server-artifact.mjs build [--arch x64|arm64] [--out out/server]
+//   node scripts/build-server-artifact.mjs build [--arch x64|arm64] [--out out/server] [--max-glibc 2.28]
+//   node scripts/build-server-artifact.mjs fetch-node --arch x64|arm64 --cache <dir>
 //   node scripts/build-server-artifact.mjs manifest --in out/server --out dist/server-manifest.json
 //
 // `build` runs on a Linux machine of the target arch (node-pty is native, so it
 // is never cross-built) after `npm ci`, `npm run build:cli` and
-// `npm run build:daemon`. It writes, into --out:
+// `npm run build:daemon`. Releases run it inside an old-glibc image through
+// scripts/build-server-artifact-container.sh, which uses `fetch-node` to hand
+// the container the pinned Node. It writes, into --out:
 //   wmux-server-<ver>-linux-<arch>.tar.gz          the artifact
 //   wmux-server-<ver>-linux-<arch>.tar.gz.sha256   `sha256sum -c` format
 //   wmux-server-<ver>-linux-<arch>.json            fragment for `manifest`
@@ -221,17 +224,31 @@ async function build(opts) {
     }
     stageNodePty(path.join(resources, 'daemon-bundle', 'node_modules', 'node-pty'));
 
-    // Every native file in the artifact, so a future addon cannot slip past.
+    // Every ELF file in the artifact (addons, helpers it execs), so a future
+    // native file cannot slip past.
     let glibcMin = NODE_GLIBC_FLOOR;
+    const isElf = (file) => {
+      if (!fs.statSync(file).isFile()) return false;
+      const fd = fs.openSync(file, 'r');
+      try {
+        const head = Buffer.alloc(4);
+        return fs.readSync(fd, head, 0, 4, 0) === 4 && head.equals(Buffer.from([0x7f, 0x45, 0x4c, 0x46]));
+      } finally {
+        fs.closeSync(fd);
+      }
+    };
     const elves = [
       path.join(nodeDir, 'bin', 'node'),
-      ...fs.readdirSync(resources, { recursive: true }).filter((f) => f.endsWith('.node')).map((f) => path.join(resources, f)),
+      ...fs.readdirSync(resources, { recursive: true }).map((f) => path.join(resources, f)).filter(isElf),
     ];
     for (const file of elves) {
       const buf = fs.readFileSync(file);
       if (buf.includes('ld-musl')) throw new Error(`${path.basename(file)} links against musl; the artifact is glibc-only`);
       const need = maxGlibcRequirement(buf);
       if (need && compareGlibc(need, glibcMin) > 0) glibcMin = need;
+    }
+    if (opts['max-glibc'] && compareGlibc(glibcMin, opts['max-glibc']) > 0) {
+      throw new Error(`the artifact needs glibc ${glibcMin}, above the allowed ${opts['max-glibc']}; build it in an older image`);
     }
 
     smokeStaged(root);
@@ -270,8 +287,12 @@ if (process.argv[1] && import.meta.url === pathToFileURL(path.resolve(process.ar
   try {
     const opts = parseArgs(rest);
     if (mode === 'build') await build(opts);
+    else if (mode === 'fetch-node') {
+      if (!ARCHES.includes(opts.arch) || !opts.cache) throw new Error('fetch-node needs --arch x64|arm64 and --cache <dir>');
+      console.log(await fetchNode(opts.arch, path.resolve(opts.cache)));
+    }
     else if (mode === 'manifest') manifest(opts);
-    else throw new Error('usage: build-server-artifact.mjs build|manifest [options]');
+    else throw new Error('usage: build-server-artifact.mjs build|fetch-node|manifest [options]');
   } catch (err) {
     console.error(`[server-artifact] ${err.message}`);
     process.exit(1);
