@@ -387,3 +387,91 @@ WSL and signed distribution remain unverified. The eight-hour soak started
 separately; a running soak is not a pass. Its runner allows 16 MiB of report
 output because eight hours of two-second memory samples exceed the default
 1 MiB child-output limit.
+
+### Output interpretation follow-up (roadmap stage 2)
+
+Rust-backed daemon PTYs now use the additive `output-interpreter-v1` capability
+for DEC mode tracking, replay preambles and OSC extraction. `feedChunk` reads the
+normalized native chunk directly. Only mode carry (256 UTF-16 units) and partial
+OSC payloads (64 Ki UTF-16 units) are retained. OSC codes cross N-API in one typed
+array per batch, with payload strings alongside; the daemon receives the same
+ordered `{ code, data }` callbacks. Node PTYs and older native modules retain the
+existing JS interpreter. This choice is per bridge, tied to the actual PTY
+backend; it does not add another daemon or replay a spawn.
+
+Ring writes still precede mode updates, then OSC callbacks, agent interpretation
+and output delivery. Recovered history seeds modes without replaying old OSC
+events. Muted output does not enter the interpreter; an explicitly held/replayed
+chunk is interpreted once after capture. Ring offsets remain JS-safe byte
+counters, including values beyond 4 GiB. Cleanup clears native OSC callbacks but
+keeps the last mode state readable by an in-flight screen render. The N-API
+finalizer frees the interpreter after its last mode reference is released.
+Completed or overflowed OSCs release allocations larger than 2,048 UTF-16 units;
+small payload storage is reused. Initial history seeding borrows the input when
+there is no previous mode carry.
+
+This is a compatibility port of `OutputModeTracker` and `OscParser`, not a claim
+of complete VT parsing. It deliberately retains the reference OSC contract:
+the two-byte introducer and ESC-backslash terminator must each arrive in one
+decoded chunk. Fixing arbitrary split introducers/terminators requires a shared
+reference change and separate qualification. Title/CWD sanitation, notification
+policy, OSC 133 subcommand interpretation/timestamps, prompt logs and agent
+status stay in Node. The local Electron PTY bridge also retains JS interpretation.
+Full ANSI/private-parser-state parity remains a later stage-2 item.
+
+Validation runs the same corpus through both `feed(text)` and `feedChunk`, for
+8,846 differential feeds against both JS references, including
+every code-point split of a mixed stream, seeded mixed chunks, OSC overflow,
+Unicode carry, resets and replay-window offsets. A real native-chunk bridge
+fixture checks mode-only recovery, mute/discard/replay, prompt offsets, callback
+order and mode references held across cleanup. The held-reference regression
+fails with `Output interpreter disposed` against the original adapter and passes
+with the fix. These run inside the three-OS native verifier alongside its
+existing PTY lifecycle and snapshot checks. The native CI matrix also runs the
+Rust interpreter/grid unit tests, including OSC allocation release on BEL, ST
+and overflow.
+
+Reproduce parser-only measurements after building the native module:
+
+```sh
+node scripts/rust-output-interpreter-bench.mjs out/interpreter-new.json
+```
+
+The initial, pre-review macOS arm64 sample uses the production adapter and callbacks,
+roughly 4 MiB per workload, one warm-up and five alternating-order repeats in
+one process. Median JS → Rust elapsed times were 3.46 → 1.07 ms for plain logs,
+5.19 → 2.88 ms for colored logs and 30.88 → 26.82 ms for an intentionally dense
+mode/OSC stream. Event counts matched. These are small parser microbenchmarks
+on a host also running the preceding core's soak; they do not establish daemon
+RSS savings, interactive latency or real-team performance. Raw measurements:
+`bench/results/rust-output-interpreter-macos-20261014.json`.
+
+The earlier eight-hour run is pinned to the preceding PTY/buffer implementation;
+it does not qualify this new interpreter. This follow-up needs its own adoption
+and cross-platform evidence before default/release promotion.
+
+The initial short-soak and daemon-smoke artifacts are development-stage evidence:
+`rust-output-interpreter-short-soak-20261014.json` used the earlier 4,420-feed
+verifier, and `rust-output-interpreter-daemon-smoke-20261014.json` measured an
+uncommitted implementation. Their source notes identify those limits; neither
+qualifies the review fixes. The review also reported a 10,923-feed randomized
+comparison without mismatches; that external result is separate from the
+reproducible corpus committed here. Callback exceptions and disposal during an
+OSC batch retain the existing native adapter behavior: parser state is already
+updated before callbacks, and disposal suppresses remaining native callbacks.
+
+Review-fix evidence at `480ba5c89` is recorded in
+`bench/results/rust-output-interpreter-review-conformance-20261014.json`:
+8,846 differential feeds across both entry points, 14 native verification groups,
+7 → 7 threads and zero remaining native workers. Local validation also passed
+296 JS tests, 11 Rust tests, daemon/verifier TypeScript checks and the Electron
+41.10.6 native smoke. Clippy passed with the pre-existing transport constructor's
+`too_many_arguments` lint allowed.
+
+The refreshed parser sample is
+`bench/results/rust-output-interpreter-review-macos-20261014.json`.
+Median JS → Rust times were 5.72 → 1.62 ms (plain), 8.82 → 5.02 ms (colored),
+and 66.41 → 64.63 ms (dense mode/OSC). Event counts still matched. This run
+shared the machine with Electron/Clippy validation and other work: the dense
+case showed only a small difference and the results do not establish a stable
+speedup. The original pre-review sample is retained as historical evidence.
