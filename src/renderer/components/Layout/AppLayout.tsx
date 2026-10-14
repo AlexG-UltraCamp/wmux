@@ -89,7 +89,8 @@ import { useIpc } from '../../hooks/useIpc';
 import type { SessionData, PaneLeaf, Pane, StashedPane, Surface, Workspace } from '../../../shared/types';
 import { FIRST_RUN_REOPEN_EVENT } from '../../../shared/firstRun';
 import { isFileDrag } from '../../../shared/dragDrop';
-import { terminalRegistry } from '../../hooks/useTerminal';
+import { terminalRegistry, watchColdFramePersistence } from '../../hooks/useTerminal';
+import { clearPersistedColdFrames, restoreColdFrames } from '../../terminal/coldFrame';
 import { resolvePtyIdsToClear } from '../../hooks/reconcileWithReQuery';
 import { runWithProgressTimeout } from '../../hooks/reconcileProgressTimeout';
 import { createLateReconcileOnConnect } from '../../hooks/lateReconcileOnConnect';
@@ -1536,6 +1537,10 @@ export default function AppLayout() {
         // .buf files on the next launch. Done renderer-side so the daemon
         // contract stays simple and no extra RPC is needed.
         const restoreEnabled = useStore.getState().scrollbackRestoreEnabled !== false;
+        // The screens the previous run saved (coldFrame.ts), before any pane
+        // mounts; with restore off they are cleared instead of read.
+        if (restoreEnabled) restoreColdFrames();
+        else clearPersistedColdFrames();
         if (!restoreEnabled) {
           console.log('[AppLayout] scrollbackRestoreEnabled=false — clearing pty state for fresh start');
           clearAllPtyState();
@@ -1985,6 +1990,12 @@ export default function AppLayout() {
       registerSessionSaver(null);
     };
   }, []);
+
+  // Each terminal's last screen, for the first reveal after a restart
+  // (coldFrame.ts). On quit, and every minute for an exit that skips
+  // beforeunload (an installer update, a crash). Only while "Restore on
+  // launch" is on; turning it off clears the stored frames.
+  useEffect(() => watchColdFramePersistence(), []);
 
   // Periodic session save — protects against crashes.
   // Awaits scrollback dump completion before saving session.json to guarantee
