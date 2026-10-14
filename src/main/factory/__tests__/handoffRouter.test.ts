@@ -1078,3 +1078,89 @@ describe('closing questions: the owner\'s answer and blocked threads (review)', 
     expect(loadThreadDecision('ws1', 'task:b', dir)).toMatchObject({ question: 'second' });
   });
 });
+
+describe('the team lead and a chain that outlives a worker', () => {
+  it('a workspace\'s lead is its coordinator: a result without replyTo and a dispatch without a bot reach it', async () => {
+    const dev = bot('ws1', 'lead');
+    const lead = bot('ws1', 'moa');
+    const issue = bot('ws1', 'triage');
+    const h = await harness([dev, lead, issue]);
+    expect(h.router.send(binding(issue), { kind: 'result', title: 'found it', body: '' })).toMatchObject({ ok: true, to: { botId: lead.id } });
+    expect(h.router.send(binding(dev), { kind: 'dispatch', title: 'take this', body: '' })).toMatchObject({ ok: true, to: { botId: lead.id } });
+    // The coordinator's own dispatch or result goes to the room's `lead`-role bot, as before.
+    expect(h.router.send(binding(lead), { kind: 'dispatch', title: 'build', body: '' })).toMatchObject({ ok: true, to: { botId: dev.id } });
+    expect(h.router.send(binding(lead), { kind: 'result', title: 'r', body: '' })).toMatchObject({ ok: true, to: { botId: dev.id } });
+    // Without an enabled coordinator, the oldest `lead`-role bot leads as before.
+    lead.enabled = false;
+    expect(h.router.send(binding(issue), { kind: 'result', title: 'again', body: '' })).toMatchObject({ ok: true, to: { botId: dev.id } });
+  });
+
+  it('a result sent from a task wake answers the dispatch its task was started for', async () => {
+    const lead = bot('ws1', 'moa');
+    const dev = bot('ws1', 'lead');
+    const h = await harness([lead, dev]);
+    h.wake.id = { wakeId: 'w-owner', attempt: 1, runId: 'run-c-1' } as Harness['wake']['id'];
+    const d = h.router.send(binding(lead), { kind: 'dispatch', toBotId: dev.id, title: 'Build it', body: '' });
+    if (!d.ok) throw new Error('dispatch failed');
+    // The developer's task wake carries the dispatch its task recorded (runningWakeOf).
+    h.wake.id = { wakeId: 'w-task', attempt: 1, handoffId: d.handoffId, reasonKind: 'facts' } as Harness['wake']['id'];
+    const r = h.router.send(binding(dev), { kind: 'result', title: 'Built', body: 'done' });
+    expect(r).toMatchObject({ ok: true, to: { botId: lead.id } });
+    if (!r.ok) return;
+    expect(h.router.get(r.handoffId)).toMatchObject({ replyTo: d.handoffId, runId: 'run-c-1', depth: 1, attribution: { originator: { kind: 'human' }, chain: [d.handoffId] } });
+    expect(h.router.summarize(d.handoffId)).toMatchObject({ answered: true });
+    // A later task wake of the same dispatch: its result goes to the lead in
+    // the same chain, never refused as a second answer.
+    h.wake.id = { wakeId: 'w-task-2', attempt: 1, handoffId: d.handoffId, reasonKind: 'facts' } as Harness['wake']['id'];
+    const later = h.router.send(binding(dev), { kind: 'result', title: 'Also tidied', body: '' });
+    expect(later).toMatchObject({ ok: true, to: { botId: lead.id } });
+    if (later.ok) expect(h.router.get(later.handoffId)).toMatchObject({ runId: 'run-c-1', depth: 1 });
+    if (later.ok) expect(h.router.get(later.handoffId)?.replyTo).toBeUndefined();
+    // The handoff wake itself still answers only once.
+    h.wake.id = { wakeId: 'w-hop', attempt: 1, handoffId: d.handoffId, reasonKind: 'handoff' } as Harness['wake']['id'];
+    expect(h.router.send(binding(dev), { kind: 'result', title: 'again', body: '' })).toMatchObject({ ok: false, code: 'duplicate_result' });
+  });
+
+  it('a question asked mid-hop: the answer\'s wake still answers that hop', async () => {
+    const lead = bot('ws1', 'moa');
+    const dev = bot('ws1', 'lead');
+    const h = await harness([lead, dev]);
+    h.wake.id = { wakeId: 'w-owner', attempt: 1, runId: 'run-c-2' } as Harness['wake']['id'];
+    const d = h.router.send(binding(lead), { kind: 'dispatch', toBotId: dev.id, title: 'Build it', body: '' });
+    if (!d.ok) throw new Error('dispatch failed');
+    h.wake.id = { wakeId: 'w-dev', attempt: 1, handoffId: d.handoffId };
+    const ask = await h.router.askPerson(binding(dev), { title: 'Which DB?', body: '' });
+    if (!ask.ok) throw new Error('not asked');
+    expect(h.router.get(ask.handoffId)).toMatchObject({ forHop: d.handoffId });
+    const answered = await h.router.answer(ask.handoffId, 'Postgres');
+    if (!answered.ok || !answered.answerHandoffId) throw new Error('not answered');
+    h.wake.id = { wakeId: 'w-answer', attempt: 1, handoffId: answered.answerHandoffId };
+    const r = h.router.send(binding(dev), { kind: 'result', title: 'Built on Postgres', body: '' });
+    expect(r).toMatchObject({ ok: true, to: { botId: lead.id } });
+    if (r.ok) expect(h.router.get(r.handoffId)).toMatchObject({ replyTo: d.handoffId, runId: 'run-c-2', depth: 1 });
+    // A question asked once the hop has its result holds no hop.
+    h.wake.id = { wakeId: 'w-dev-2', attempt: 1, handoffId: d.handoffId };
+    const late = await h.router.askPerson(binding(dev), { title: 'Anything else?', body: '', threadId: 'general' });
+    if (!late.ok) throw new Error('not asked');
+    expect(h.router.get(late.handoffId)?.forHop).toBeUndefined();
+  });
+});
+
+describe('retention of a hop held by an open question', () => {
+  it('an old dispatch stays while a question asked on it is open', async () => {
+    const lead = bot('ws1', 'moa');
+    const dev = bot('ws1', 'lead');
+    const file = path.join(dir, 'factory', HANDOFFS_FILENAME);
+    fs.mkdirSync(path.dirname(file), { recursive: true });
+    const old = now - HANDOFF_STORE_LIMITS.RETAIN_MS - 1000;
+    const base = { version: 1, runId: 'run-old', depth: 0, hopsInRun: 1, landing: 'wake', status: 'delivered', createdAt: old, updatedAt: old };
+    const dispatch = { ...base, id: 'h-held', threadId: 'handoff:h-held', from: { kind: 'bot', workspaceId: 'ws1', botId: lead.id }, to: { kind: 'bot', workspaceId: 'ws1', botId: dev.id }, kind: 'dispatch', attribution: { originator: { kind: 'human' }, chain: [] }, payload: { title: 'Build it', body: '' } };
+    const loose = { ...dispatch, id: 'h-loose', threadId: 'handoff:h-loose' };
+    const ask = { ...base, id: 'h-ask', runId: 'run-ask', threadId: 'handoff:h-held', from: { kind: 'bot', workspaceId: 'ws1', botId: dev.id }, to: { kind: 'human' }, kind: 'ask_person', attribution: { originator: { kind: 'bot', workspaceId: 'ws1', botId: dev.id }, chain: [] }, payload: { title: 'Which DB?', body: '' }, status: 'queued', forHop: 'h-held', createdAt: now, updatedAt: now };
+    fs.writeFileSync(file, [dispatch, loose, ask].map((x) => JSON.stringify(x)).join('\n') + '\n');
+    const h = await harness([lead, dev]);
+    expect(h.router.get('h-held')).not.toBeNull();
+    expect(h.router.get('h-loose')).toBeNull();
+    expect(h.router.get('h-ask')?.forHop).toBe('h-held');
+  });
+});
