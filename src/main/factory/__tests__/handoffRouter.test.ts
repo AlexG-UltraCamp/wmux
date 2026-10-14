@@ -950,6 +950,47 @@ describe('closing questions nobody needs to answer (A5)', () => {
     expect(h.wakes).toEqual([]);
   });
 
+  it('chat words do not close a question with options: its choices stay on the card', async () => {
+    const lead = bot('ws1', 'lead');
+    const h = await harness([lead]);
+    const pick = await h.router.askPerson(binding(lead), { title: 'Where should I start?', body: '', options: ['Repo', 'Issues'] });
+    if (!pick.ok) throw new Error('ask failed');
+    now += 5;
+    expect(await h.router.closeAnsweredInChat(lead.id, ownerWake('general', now))).toEqual([]);
+    expect(h.router.get(pick.handoffId)!.status).toBe('delivered');
+    expect(open(h)).toEqual(['Where should I start?']);
+  });
+
+  it('chat words that are one of the options answer the question with that option', async () => {
+    const lead = bot('ws1', 'lead');
+    const h = await harness([lead]);
+    const pick = await h.router.askPerson(binding(lead), { title: 'Where should I start?', body: '', options: ['Repo', 'Issues'] });
+    if (!pick.ok) throw new Error('ask failed');
+    now += 5;
+    const said = { ...ownerWake('general', now), reason: { kind: 'human' as const, text: '  issues ', source: 'desktop' as const } };
+    expect(await h.router.closeAnsweredInChat(lead.id, said)).toEqual([pick.handoffId]);
+    await h.router.reconcile();
+    expect(h.router.get(pick.handoffId)!.status).toBe('answered');
+    const answer = h.router.list({ workspaceId: 'ws1' }).find((x) => x.kind === 'answer')!;
+    // Stored as delivered: the bot read the words in the turn that ended; no second wake.
+    expect(answer).toMatchObject({ from: { kind: 'human' }, to: { kind: 'bot', botId: lead.id }, replyTo: pick.handoffId, payload: { body: 'Issues' }, status: 'delivered' });
+    expect(h.wakes).toEqual([]);
+    expect(open(h)).toEqual([]);
+    expect(h.rooms.read('ws1').cards.some((c) => c.title.startsWith('Question closed'))).toBe(false);
+  });
+
+  it('words that are an option of several open questions answer none of them', async () => {
+    const lead = bot('ws1', 'lead');
+    const h = await harness([lead]);
+    const a = await h.router.askPerson(binding(lead), { title: 'Ship it?', body: '', options: ['Yes', 'No'] });
+    const b = await h.router.askPerson(binding(lead), { title: 'Delete it?', body: '', options: ['Yes', 'No'] });
+    if (!a.ok || !b.ok) throw new Error('asks failed');
+    now += 5;
+    const said = { ...ownerWake('general', now), reason: { kind: 'human' as const, text: 'Yes', source: 'desktop' as const } };
+    expect(await h.router.closeAnsweredInChat(lead.id, said)).toEqual([]);
+    expect(open(h).sort()).toEqual(['Delete it?', 'Ship it?']);
+  });
+
   it('a greeting question is marked, and closes once the bot has a job', async () => {
     const lead = bot('ws1', 'lead');
     const h = await harness([lead]);

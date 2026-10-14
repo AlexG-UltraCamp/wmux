@@ -9,6 +9,7 @@ import SshServiceDialog from '../Remote/SshServiceDialog';
 import { sshNeedsIdentityCheck, sshNeedsPerson, type SshTunnelState } from '../../../shared/remoteHosts';
 import PaneActionsMenu, { PANE_ACTIONS_MENU_WIDTH, type PaneActionItem } from '../Pane/PaneActionsMenu';
 import { selectFleetSectionCounts } from '../../stores/selectors/fleet';
+import { selectOwnerWorkspaces } from './botTasks';
 import { selectActivePcId, selectPcRailHosts, selectPcRailVisible } from '../../stores/selectors/pcRail';
 import { LOCAL_PC_ID, isShadowWorkspaceId, type PcRailHost } from '../../../shared/pcRail';
 import type { Workspace } from '../../../shared/types';
@@ -28,7 +29,7 @@ function localWorkspaces(all: Workspace[]): Workspace[] {
   return out;
 }
 const selectLocalNeedsYou = (s: StoreState): number =>
-  selectFleetSectionCounts({ ...s, workspaces: localWorkspaces(s.workspaces) }).needsYou;
+  selectFleetSectionCounts({ ...s, workspaces: localWorkspaces(selectOwnerWorkspaces(s)) }).needsYou;
 type MenuState = { kind: 'main' } | { kind: 'host'; hostId: string };
 
 /**
