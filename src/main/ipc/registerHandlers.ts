@@ -1,3 +1,4 @@
+import { registerTerminalCoreHandlers } from './handlers/terminalCore.handler';
 import { registerQuickCommandHandlers } from './handlers/quickCommand.handler';
 import { registerUsageLimitHandlers } from '../usageLimit/usageLimit.handler';
 import { registerWorkspaceSettle } from '../workspace/settle/workspaceSettleHost';
@@ -180,6 +181,7 @@ export function registerAllHandlers(
   // main/index.ts) and intentionally NOT in this swap cycle. See the
   // import-block note above for the race rationale.
   const cleanupShell = registerShellHandlers();
+  const cleanupTerminalCore = registerTerminalCoreHandlers(daemonClient);
   const cleanupFonts = registerFontHandlers();
   const cleanupMetadata = registerMetadataHandlers(ptyManager, getWindow, {
     // X1: daemon-backed sessions never appear in ptyManager — disable the
@@ -515,6 +517,7 @@ export function registerAllHandlers(
     // cleanupSession deliberately omitted — session/scrollback handlers
     // live outside this swap cycle (see import-block note above).
     cleanupShell();
+    cleanupTerminalCore();
     cleanupFonts();
     cleanupMetadata();
     if (cleanupLocalContext) cleanupLocalContext();

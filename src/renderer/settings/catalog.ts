@@ -97,6 +97,7 @@ export const SETTINGS_CATALOG: SettingsCatalogEntry[] = [
   { id: 'firstrun', tab: 'general', labelKey: 'settings.firstRunSetup', descKey: 'settings.firstRunSetupDesc', synonyms: 'first run setup doctor diagnose' },
   { id: 'reset', tab: 'general', labelKey: 'settings.reset', synonyms: 'factory default wipe 초기화' },
 
+  { id: 'terminal-engine', tab: 'terminal', labelKey: 'settings.terminalEngine', descKey: 'settings.terminalEngineDesc', synonyms: 'rust node engine pty buffer memory 러스트 엔진 메모리' },
   { id: 'shell', tab: 'terminal', labelKey: 'settings.defaultShell', synonyms: 'zsh bash powershell pwsh fish 셸' },
   { id: 'startdir', tab: 'terminal', labelKey: 'settings.startupDirectory', descKey: 'settings.startupDirectoryDesc', synonyms: 'cwd home folder path' },
   { id: 'splitcwd', tab: 'terminal', labelKey: 'settings.splitInheritsCwd', descKey: 'settings.splitInheritsCwdDesc', synonyms: 'cwd split inherit' },

@@ -314,6 +314,8 @@ export const IPC = {
   // Settings › General "Block passwords and keys in commits, pushes and PRs",
   // mirrored to main, which runs those paths (main/git/secretGuardSetting.ts).
   SECRET_GUARD_ENABLED: 'settings:secret-guard-enabled',
+  TERMINAL_CORE_SETTINGS_GET: 'settings:terminal-core:get',
+  TERMINAL_CORE_SETTINGS_SET: 'settings:terminal-core:set',
   // #1103 — the renderer's default-WSL-distro choice, pushed to main so
   // pty.create can inject `wsl.exe -d <distro>` at the shell-resolution
   // choke point without threading it through every create call.

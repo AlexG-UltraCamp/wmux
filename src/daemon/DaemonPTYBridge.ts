@@ -1,3 +1,5 @@
+import type { NativeOutputChunk } from '../shared/nativeTerminalCore';
+import type { TerminalPty } from '../shared/terminalPty';
 import { EventEmitter } from 'node:events';
 import { randomBytes } from 'node:crypto';
 import type { IPty } from 'node-pty';
@@ -64,6 +66,7 @@ export function scanStartupDa1(text: string): 'answer' | 'more' | 'closed' {
  *
  * Events:
  *  - 'data'     → Buffer (raw PTY output)
+ *  - 'outputActivity' → no payload (unmuted output, no byte copy required)
  *  - 'cwd'      → { sessionId: string, cwd: string }
  *  - 'agent'    → { sessionId: string, event: AgentEvent }
  *  - 'notification' → { sessionId, event: TerminalNotification & { ts } }
@@ -1263,9 +1266,20 @@ export class DaemonPTYBridge extends EventEmitter {
     let lastDetectedCwd = '';
     let promptBuffer = '';
 
-    const capture = (data: string, buf: Buffer): void => {
+    const capture = (data: string, buf?: Buffer, nativeChunk?: NativeOutputChunk): void => {
+      // Detached sessions need retention/analysis, but no JS byte copy. Snapshot
+      // tees and live clients subscribe to data and materialize exactly once.
+      let delivery = buf;
+      const forward = () => {
+        this.emit('outputActivity');
+        if (this.listenerCount('data') > 0) {
+          delivery ??= nativeChunk?.readBytes() ?? Buffer.from(data);
+          this.emit('data', delivery);
+        }
+      };
       try {
-        ringBuffer.write(buf);
+        if (nativeChunk) ringBuffer.writeNativeChunk(nativeChunk);
+        else ringBuffer.write(buf ?? Buffer.from(data));
         // AFTER the ring write: the tracker's offsets are in the ring's own
         // coordinate system, so it needs the counter this chunk already moved.
         modeTracker.feed(data, ringBuffer.totalBytesWritten);
@@ -1292,24 +1306,25 @@ export class DaemonPTYBridge extends EventEmitter {
           }
         }
 
-        this.emit('data', buf);
+        forward();
         // Output on a pane blocked on a human may be the dialog closing (see
         // `clearAwaiting`); the daemon re-reads the screen off this.
         if (this.awaitingHuman) this.emit('awaitingActivity', { sessionId, cause: 'output' });
       } catch (err) {
         // Still forward raw data even if parsing failed
-        this.emit('data', buf);
+        forward();
       }
     };
     this.captureChunk = capture;
 
     // PTY data handler
-    const onDataDisposable = ptyProcess.onData((data: string) => {
+    const onOutput = (data: string, nativeChunk?: NativeOutputChunk) => {
       // Ahead of the mute check: a recovered session is muted at spawn, and
       // its startup query is exactly the one nobody else will answer.
       if (this.startupDa1) this.checkStartupDa1(data, ptyProcess);
 
-      const buf = Buffer.from(data);
+      const buf = nativeChunk ? undefined : Buffer.from(data);
+      const byteLength = nativeChunk ? nativeChunk.byteLength : (buf?.length ?? 0);
 
       // Byte activity is weaker than a detector/hook terminal edge. Process it
       // FIRST, so a waiting/complete pattern found in this same chunk is
@@ -1325,7 +1340,7 @@ export class DaemonPTYBridge extends EventEmitter {
       // names it directly instead of blocking every byte to be safe.
       if (!this.muted && (!this.explicitTerminalStatus || this.isInputQuiet())) {
         try {
-          activityMonitor.feed(sessionId, buf.length);
+          activityMonitor.feed(sessionId, byteLength);
         } catch {
           // activity heuristics must never block detection or data forwarding.
         }
@@ -1349,17 +1364,21 @@ export class DaemonPTYBridge extends EventEmitter {
       // at the geometry the renderer shows (#1464).
       if (this.muted) {
         if (this.heldWhileMuted && !this.heldFull) {
-          if (this.heldBytes + buf.length > DaemonPTYBridge.MAX_HELD_BYTES) {
+          if (this.heldBytes + byteLength > DaemonPTYBridge.MAX_HELD_BYTES) {
             this.heldFull = true;
           } else {
-            this.heldBytes += buf.length;
+            this.heldBytes += byteLength;
             this.heldWhileMuted.push(data);
           }
         }
         return;
       }
-      capture(data, buf);
-    });
+      capture(data, buf, nativeChunk);
+    };
+    const nativePty = ptyProcess as TerminalPty;
+    const onDataDisposable = nativePty.onNativeData
+      ? nativePty.onNativeData(chunk => onOutput(chunk.text, chunk))
+      : ptyProcess.onData(onOutput);
     this.dataDisposable = () => onDataDisposable.dispose();
 
     // PTY exit handler. Capture `signal` alongside exitCode: a clean shell

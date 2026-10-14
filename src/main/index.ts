@@ -1,6 +1,7 @@
 // Must stay the first import: turns off working-directory executable lookup (Windows) before any module runs.
 import '../shared/exeSearchGuard';
 import { warmLoginShellPath } from './claude/resolveClaudeExecutable';
+import { terminalCoreSelection } from '../shared/terminalCoreSettings';
 import { randomUUID as phoneBrowserRequestId } from 'node:crypto';
 import { webContents as phoneWebContents } from 'electron';
 import { withPhoneBrowserInputFocus, dispatchPhoneBrowserScroll, phoneBrowserNativeBounds } from './phone/PhoneBrowserInput';
@@ -516,6 +517,7 @@ if (!gotLock) {
   });
 }
 
+terminalCoreSelection();
 markBoot('construction-start');
 const ptyManager = new PTYManager();
 let mainWindow: BrowserWindow | null = null;

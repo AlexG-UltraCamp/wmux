@@ -52,6 +52,7 @@ node scripts/control-wmux.mjs click --text "Skip for now" [--nth 0]
 node scripts/control-wmux.mjs press --key Meta+Comma                # Playwright key syntax
 node scripts/control-wmux.mjs press --key Enter --label "Terminal input"   # focus target first
 node scripts/control-wmux.mjs type --text 'echo hi' --label "Terminal input" # keyboard.type into the target (appends)
+node scripts/control-wmux.mjs select --label "Terminal engine" --value rust # native select user control
 node scripts/control-wmux.mjs hover --selector '[data-sidebar-row]' --nth 0    # reveal hover-only controls
 node scripts/control-wmux.mjs wait-settle --testid settings-page-title [--state visible|hidden] [--timeout 10000]
 node scripts/control-wmux.mjs eval --js "document.querySelector('[data-testid=settings-page-title]')?.textContent"
@@ -95,6 +96,12 @@ A clean `NOT VERIFIED` is a useful result. Do not upgrade `INCONCLUSIVE` because
 
 ## Cleanup
 
+For an app-only reconnect check, `control-wmux restart` gracefully exits only
+the recorded app and relaunches that same executable/profile. It requires a
+live daemon whose environment matches the recorded suffix and retains that
+daemon and its sessions. Run `doctor` afterward and compare the daemon PID and
+terminal output. This does not apply an engine change that needs a daemon restart.
+
 ```sh
 node scripts/control-wmux.mjs stop          # app + its daemon; data dir kept for inspection
 node scripts/control-wmux.mjs stop --purge  # also delete the suffixed data this run created
@@ -115,6 +122,8 @@ When the claim is a pull request, end with the verdict line above in your report
 | `snapshot` | ARIA tree of body or one target, saved to evidence |
 | `screenshot` | CDP PNG of the main window, saved to evidence |
 | `click` / `hover` / `press` / `type` | act by handle / key / characters |
+| `select` | choose a native select option with `--value` through its UI control |
+| `restart` | relaunch the owned app while retaining its verified daemon |
 | `eval` (`inspect`) | read-only JS expression in the main window |
 | `wait-settle` | wait for a target state and DOM quiet |
 | `console` | renderer console lines from `app.log` |
