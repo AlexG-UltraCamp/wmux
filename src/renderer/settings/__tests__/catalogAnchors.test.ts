@@ -18,6 +18,7 @@ import { SETTINGS_CATALOG } from '../catalog';
 const SETTINGS_DIR = join(__dirname, '..', '..', 'components', 'Settings');
 const SOURCES = [
   'SettingsPanel.tsx',
+  'TerminalEngineSetting.tsx',
   'AccountsSection.tsx',
   'ClaudeIntegrationSection.tsx',
   'IntegrationSetupSection.tsx',
