@@ -125,14 +125,14 @@ describe('X6 ② reboot-survival durability', () => {
     expect(body).not.toMatch(/stateWriter\.saveDebounced\(/);
   });
 
-  it('applyResumeBinding moves the pane cwd to the binding cwd', () => {
+  it('applyResumeBinding moves the pane cwd only when the transcript relocated', () => {
     // Recovery resumes the exact session only when meta.cwd matches the
     // binding's cwd; an agent that changed directory itself must move meta.cwd.
     const src = fs.readFileSync(daemonIndexPath, 'utf-8');
     const idx = src.indexOf('const applyResumeBinding =');
     expect(idx).toBeGreaterThan(-1);
     const body = src.slice(idx, src.indexOf("pipeServer.onRpc('daemon.setResumeBinding'", idx));
-    expect(body).toMatch(/sessionManager\.adoptAgentCwd\(p\.id, next\.cwd\)/);
+    expect(body).toMatch(/transcriptRelocated\(prev, next\)\) sessionManager\.adoptAgentCwd\(p\.id, next\.cwd\)/);
   });
 
   it('useTerminal onData guards clearResumeHint against focus reports (CSI I / CSI O)', () => {
